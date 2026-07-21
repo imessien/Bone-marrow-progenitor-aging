@@ -1,0 +1,10 @@
+.env
+.venv/
+.numba_cache/
+__marimo__/
+__pycache__/
+.ruff_cache/
+data
+data/
+*.pdf
+
