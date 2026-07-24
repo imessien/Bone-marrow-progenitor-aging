@@ -10,4 +10,7 @@ results
 results/
 *.pdf
 .python-version
-docs/
+# ignore ad-hoc docs but keep compound-engineering plans
+docs/*
+!docs/plans/
+!docs/plans/**

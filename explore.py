@@ -16,6 +16,7 @@ Usage:
   python preprocess.py --dataset age_core --annotate
   python explore.py --skip-transfer
   python explore.py --pseudotime-only
+  python explore.py --path-gnn
 """
 
 from __future__ import annotations
@@ -699,6 +700,36 @@ def run_pseudotime_on_saved(*, h5ad: Path = JOINT_H5AD) -> Path:
     return h5ad
 
 
+def run_path_gnn_on_saved(
+    *,
+    h5ad: Path = JOINT_H5AD,
+    out_dir: Path = JOINT_OUT,
+    max_cells: int | None = 20000,
+    n_bins: int = 20,
+    gnn_epochs: int = 80,
+) -> dict:
+    """Shallow tree-GNN path persistence on an existing scGen joint."""
+    import scanpy as sc
+
+    # plotting pulls torch; keep import local like other plot helpers in this file
+    from plotting import run_path_gnn_pipeline
+
+    if not h5ad.exists():
+        raise FileNotFoundError(f"Missing {h5ad}; run explore.py first")
+    print(f"Loading {h5ad} for path-GNN…")
+    adata = sc.read_h5ad(h5ad)
+    written = run_path_gnn_pipeline(
+        adata,
+        out_dir,
+        n_bins=n_bins,
+        max_cells=max_cells,
+        gnn_epochs=gnn_epochs,
+    )
+    for k, p in written.items():
+        print(f"  {k} → {p}")
+    return written
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -739,11 +770,28 @@ if __name__ == "__main__":
             "write age_bin UMAP + marker branch streams (no scGen retrain)"
         ),
     )
+    parser.add_argument(
+        "--path-gnn",
+        action="store_true",
+        help=(
+            "Shallow tree-GNN on HSPC→Myeloid_prog skeleton; path persistence, "
+            "step task scores, GSEA under results/joint_hsc_aging/"
+        ),
+    )
+    parser.add_argument(
+        "--max-cells",
+        type=int,
+        default=20000,
+        help="Subsample for --path-gnn (0 = all cells)",
+    )
     args = parser.parse_args()
     if args.su_holdout:
         su_holdout_age_summary()
     elif args.pseudotime_only:
         run_pseudotime_on_saved()
+    elif args.path_gnn:
+        n = None if args.max_cells == 0 else args.max_cells
+        run_path_gnn_on_saved(max_cells=n)
     else:
         run_headless(
             max_epochs=args.max_epochs,
