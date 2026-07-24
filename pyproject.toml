@@ -39,7 +39,6 @@ dependencies = [
     "torch-geometric>=2.7.0",
     "torchmetrics>=0.11",
     "zarr>=2.16,<3",
-    "marimo",
     "phlowerpy==0.1.5",
     "colorir>=2.0",
     "doubletdetection>=4.3",
