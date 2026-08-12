@@ -1,33 +1,46 @@
 # Bone-marrow progenitor aging
 
 IL-1 drives HSCs toward myeloid/GMP; Mitchell tests that genetically via Il1r1.
-We integrate age-core cohorts with scGen (technical batch only), then ask how
-**condition** (age / genotype) shifts HSC→GMP branch fate and EM metabolic
-programs along pseudotime — not “scGen proves aging.”
+We integrate age-core cohorts with scGen (technical batch only), then ask which
+cells are biased toward a **GMP-committed sink** vs **agedHSC (Mk-biased)
+persistence**.
 
 ## Workflow
 
 ```bash
 source .venv/bin/activate
-python preprocess.py --dataset age_core --annotate   # QC + annotate per study
-python explore.py --skip-transfer                    # joint scGen + UMAP + DPT
-python explore.py --pseudotime-only                  # refresh PT / plots only
-python explore.py --path-gnn                         # shallow tree-GNN path persistence
-python -c "import plotting; plotting._self_check()"  # synthetic smoke
+python preprocess.py --dataset age_core --annotate
+python explore.py --train          # scGen + UMAP + DPT (once)
+python explore.py                  # fate UMAP + drivers + GSEA
+python -c "import explore; explore._self_check()"
 ```
 
 | File | Role |
 |------|------|
 | `preprocess.py` | Per-study QC, lineage, age_bin |
-| `explore.py` | Joint concat, scGen, DPT, path-GNN CLI |
-| `plotting.py` | Figures + shallow tree-GNN path persistence |
+| `explore.py` | scGen joint + GMP vs agedHSC fate package |
 
-Outputs live under `results/joint_hsc_aging/` on the bone store
-(`/cis/net/r41/data/iessien1/bone/results/joint_hsc_aging`), symlinked as
-`results/` in this repo.
+Outputs under `results/joint_hsc_aging/`.
 
-**Plot / model convention:** `age_bin` vertical (early→mid→late); pseudotime
-drives path start / persist / die-off on an HSPC→Myeloid_prog skeleton.
-Task scores at every step; GSEA on long vs short routes. Finer labels later.
-No early cells in Myeloid_prog would be surprising — early myeloid is expected.
-Mitchell IL1R1KO is old-only — frame genotype contrasts accordingly.
+**Known hole:** Mitchell IL1R1KO in [GSE169162](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE169162) is **old-only** (no young KO).
+
+## CHIP metabolic Dynamic Deep Factor Graph
+
+Single entrypoint: **`chip_metabolic.py`**.
+
+Hierarchy: **gene → task → subsystem → system** (mouse scCellFie).  
+Dynamic edge gates + deep unrolled message passing.  
+Biology: Tet2 × IL-1β 2×2 on N-glycosylation / glycolysis / OXPHOS  
+(GSE209994 is all young — no age axis in this graph).
+
+```bash
+source .venv/bin/activate
+export NUMBA_CACHE_DIR=/tmp/numba_cache_bm
+unset CUDA_VISIBLE_DEVICES   # use all visible GPUs (DataParallel)
+python chip_metabolic.py
+```
+
+Mouse DB: `/cis/net/r41/data/iessien1/bone/sccellfie/mus_musculus`  
+Outputs: `/cis/net/r41/data/iessien1/bone_marrow_results/chip_metabolic_graph/` (repo `results/` symlink)
+
+Training requires CUDA. Batch size scales as `1024 × n_GPU` via `nn.DataParallel` across every visible device.

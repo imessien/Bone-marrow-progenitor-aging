@@ -10,6 +10,10 @@ Datasets (counts already deposited — **no Cell Ranger**):
   gse147729   Hérault young/old HSPC 10x (GSE147729)
   gse246464   Elias/van den Brink young/old HSC multiome **RNA only** (GSE246464)
   gse59114    Kowalczyk SMART-seq young/old LT/ST/MPP (**log-norm only** — not scGen)
+  gse209994   CHIP pilot: Tet2 WT/KO × vehicle/IL-1β Lin− BM 10x (GSE209994)
+  gse298597   CHIP pilot: WT/Tet2/Dnmt3a BM→5xFAD brain 10x h5 (GSE298597)
+  gse163503   Kovtonyuk bulk BM HSC DESeq2-normalized Smart-seq2 (GSE163503; age gate)
+  prjeb56666  Caiado bulk HSC Smart-seq2 WT/Tet2+/− × PBS/IL-1α (ENA PRJEB56666; cargo check)
 
 Same QC contract as validate_hspc_bridge._gpu_qc_preprocess so outputs can be
 concatenated later (harmonized obs: dataset, technical_batch, age_label, lineage).
@@ -20,16 +24,25 @@ Usage:
   python preprocess.py --dataset age_core --annotate
   python preprocess.py --dataset gse70657 --annotate --force
   python preprocess.py --dataset gse59114 --annotate --force
+  python preprocess.py --dataset gse209994 --annotate
+  python preprocess.py --dataset gse298597 --annotate
+  python preprocess.py --dataset gse163503 --annotate --force
+  python preprocess.py --dataset prjeb56666 --annotate --force
+  python preprocess.py --dataset chip_pilot --annotate
 
 Cell Ranger: not required. Su/Grover are plate-seq counts; Mitchell GEO ships filtered 10x
 H5; White GEO ships Seurat h5ad with UMI counts in `.raw`; Yang/Hérault/Elias ship MTX.
 GSE59114 GEO ships log-scaled expression (no integer counts) — reference only.
+GSE163503 GEO ships DESeq2-normalized bulk HSC counts (no Scrublet; log1p after QC).
+PRJEB56666: kallisto gene counts → median-of-ratios size factors → log1p (bulk; no Scrublet).
+CHIP pilots are optional (not in age_core): GSE209994 MTX; GSE298597 raw 10x h5.
 """
 from __future__ import annotations
 
 import argparse
 import gzip
 import json
+import re
 import shutil
 import warnings
 from pathlib import Path
@@ -49,6 +62,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 sc.settings.verbosity = 1
 
 BONE = Path("/cis/net/r41/data/iessien1/bone")
+RESULTS = Path("/cis/net/r41/data/iessien1/bone_marrow_results")
 
 PATHS = {
     "su2024": {
@@ -89,6 +103,30 @@ PATHS = {
         "source": BONE / "GSE59114" / "processed" / "combined_lognorm.h5ad",
         "out": BONE / "GSE59114" / "processed" / "gse59114_qc_preprocessed.h5ad",
     },
+    "gse209994": {
+        "raw": BONE / "GSE209994" / "raw",
+        "source": BONE / "GSE209994" / "processed" / "combined_counts.h5ad",
+        "out": BONE / "GSE209994" / "processed" / "gse209994_qc_preprocessed.h5ad",
+    },
+    "gse298597": {
+        "raw": BONE / "GSE298597" / "raw",
+        "source": BONE / "GSE298597" / "processed" / "combined_counts.h5ad",
+        "out": BONE / "GSE298597" / "processed" / "gse298597_qc_preprocessed.h5ad",
+    },
+    "gse163503": {
+        "raw": BONE / "GSE163503" / "raw" / "GSE163503_normalized_counts.csv.gz",
+        "ensembl_map": BONE / "GSE163503" / "processed" / "ensembl_to_symbol.tsv",
+        "source": BONE / "GSE163503" / "processed" / "combined_counts.h5ad",
+        "out": BONE / "GSE163503" / "processed" / "gse163503_qc_preprocessed.h5ad",
+    },
+    "prjeb56666": {
+        "raw": BONE / "PRJEB56666" / "raw",
+        "kallisto": BONE / "PRJEB56666" / "kallisto",
+        "t2g": BONE / "PRJEB56666" / "ref" / "t2g_M26.tsv",
+        "ena_meta": BONE / "PRJEB56666" / "processed" / "ena_filereport.tsv",
+        "source": BONE / "PRJEB56666" / "processed" / "combined_counts.h5ad",
+        "out": BONE / "PRJEB56666" / "processed" / "prjeb56666_qc_preprocessed.h5ad",
+    },
 }
 
 AGE_CORE_10X = ["gse169162", "gse310923", "gse169608", "gse147729", "gse246464"]
@@ -96,7 +134,18 @@ AGE_CORE_10X = ["gse169162", "gse310923", "gse169608", "gse147729", "gse246464"]
 # midpoint) — kept as optional loaders, not age_core.
 AGE_CORE_PLATESEQ = ["su2024"]
 OPTIONAL_PLATESEQ = ["gse70657", "gse59114"]
-ALL_DATASETS = [*AGE_CORE_PLATESEQ, *AGE_CORE_10X, *OPTIONAL_PLATESEQ]
+# Belk/CHIP gate×cargo pilot — not joined into age_core scGen by default.
+CHIP_PILOT_10X = ["gse209994", "gse298597"]
+# Bulk HSC: Kovtonyuk age×IL1R1 gate prior; Caiado Tet2×IL-1α cargo check.
+# Neither joins scGen / age_core.
+OPTIONAL_BULK = ["gse163503", "prjeb56666"]
+ALL_DATASETS = [
+    *AGE_CORE_PLATESEQ,
+    *AGE_CORE_10X,
+    *OPTIONAL_PLATESEQ,
+    *CHIP_PILOT_10X,
+    *OPTIONAL_BULK,
+]
 
 # Shared mouse BM panels (same as explore.py / validate_hspc_bridge)
 BM_MARKER_SETS: dict[str, list[str]] = {
@@ -158,6 +207,162 @@ GSE246464_SAMPLES = {
         "age_months": 22.5,
         "age_label": "old",
         "age_group": "old",
+        "rep": "2",
+    },
+}
+
+# GEO filtered_feature_bc_matrix prefixes (sample_key → _barcodes/_features/_matrix).
+GSE209994_SAMPLES = {
+    "GSE209994_WT_Unt_rep1_rep2_filtered_feature_bc_matrix": {
+        "genotype": "WT",
+        "treatment": "vehicle",
+        "library_pool": "rep1_rep2",
+        "age_months": 2.5,
+        "age_label": "young",
+        "age_group": "young",
+    },
+    "GSE209994_WT_Unt_rep3_rep4_filtered_feature_bc_matrix": {
+        "genotype": "WT",
+        "treatment": "vehicle",
+        "library_pool": "rep3_rep4",
+        "age_months": 2.5,
+        "age_label": "young",
+        "age_group": "young",
+    },
+    "GSE209994_WT_IL1b_rep1_rep2_filtered_feature_bc_matrix": {
+        "genotype": "WT",
+        "treatment": "IL1b",
+        "library_pool": "rep1_rep2",
+        "age_months": 2.5,
+        "age_label": "young",
+        "age_group": "young",
+    },
+    "GSE209994_WT_IL1b_rep3_rep4_filtered_feature_bc_matrix": {
+        "genotype": "WT",
+        "treatment": "IL1b",
+        "library_pool": "rep3_rep4",
+        "age_months": 2.5,
+        "age_label": "young",
+        "age_group": "young",
+    },
+    "GSE209994_KO_Unt_rep1_rep2_filtered_feature_bc_matrix": {
+        "genotype": "Tet2_KO",
+        "treatment": "vehicle",
+        "library_pool": "rep1_rep2",
+        "age_months": 2.5,
+        "age_label": "young",
+        "age_group": "young",
+    },
+    "GSE209994_KO_Unt_rep3_rep4_filtered_feature_bc_matrix": {
+        "genotype": "Tet2_KO",
+        "treatment": "vehicle",
+        "library_pool": "rep3_rep4",
+        "age_months": 2.5,
+        "age_label": "young",
+        "age_group": "young",
+    },
+    "GSE209994_KO_IL1b_rep1_rep2_filtered_feature_bc_matrix": {
+        "genotype": "Tet2_KO",
+        "treatment": "IL1b",
+        "library_pool": "rep1_rep2",
+        "age_months": 2.5,
+        "age_label": "young",
+        "age_group": "young",
+    },
+    "GSE209994_KO_IL1b_rep3_rep4_filtered_feature_bc_matrix": {
+        "genotype": "Tet2_KO",
+        "treatment": "IL1b",
+        "library_pool": "rep3_rep4",
+        "age_months": 2.5,
+        "age_label": "young",
+        "age_group": "young",
+    },
+}
+
+# Stem: GSM… filenames without .raw_feature_bc_matrix.h5
+GSE298597_SAMPLES = {
+    "GSM9018241_main_WT_1": {
+        "genotype": "WT",
+        "panel": "main",
+        "enrichment": "CD11a",
+        "treatment": "LPS",
+        "rep": "1",
+    },
+    "GSM9018242_main_WT_2": {
+        "genotype": "WT",
+        "panel": "main",
+        "enrichment": "CD11a",
+        "treatment": "LPS",
+        "rep": "2",
+    },
+    "GSM9018243_main_Tet2_2": {
+        "genotype": "Tet2_KO",
+        "panel": "main",
+        "enrichment": "CD11a",
+        "treatment": "LPS",
+        "rep": "1",
+    },
+    "GSM9018244_main_Tet2_3": {
+        "genotype": "Tet2_KO",
+        "panel": "main",
+        "enrichment": "CD11a",
+        "treatment": "LPS",
+        "rep": "2",
+    },
+    "GSM9018245_main_Dnmt3a_1": {
+        "genotype": "Dnmt3a_KO",
+        "panel": "main",
+        "enrichment": "CD11a",
+        "treatment": "LPS",
+        "rep": "1",
+    },
+    "GSM9018246_main_Dnmt3a_2": {
+        "genotype": "Dnmt3a_KO",
+        "panel": "main",
+        "enrichment": "CD11a",
+        "treatment": "LPS",
+        "rep": "2",
+    },
+    "GSM9018247_Validation_WT_br6": {
+        "genotype": "WT",
+        "panel": "validation",
+        "enrichment": "CD45",
+        "treatment": "none",
+        "rep": "1",
+    },
+    "GSM9018248_Validation_WT_br7": {
+        "genotype": "WT",
+        "panel": "validation",
+        "enrichment": "CD45",
+        "treatment": "none",
+        "rep": "2",
+    },
+    "GSM9018249_Validation_Tet2_br2": {
+        "genotype": "Tet2_KO",
+        "panel": "validation",
+        "enrichment": "CD45",
+        "treatment": "none",
+        "rep": "1",
+    },
+    "GSM9018250_Validation_Tet2_br5": {
+        "genotype": "Tet2_KO",
+        "panel": "validation",
+        "enrichment": "CD45",
+        "treatment": "none",
+        "rep": "2",
+    },
+    "GSM9018251_Validation_Dnmt3a_br14": {
+        "genotype": "Dnmt3a_KO",
+        "panel": "validation",
+        "enrichment": "CD45",
+        "treatment": "none",
+        "rep": "1",
+    },
+    "GSM9018252_Validation_Dnmt3a_br15": {
+        "genotype": "Dnmt3a_KO",
+        "panel": "validation",
+        "enrichment": "CD45",
+        "treatment": "none",
         "rep": "2",
     },
 }
@@ -714,6 +919,293 @@ def load_gse70657_counts(*, force: bool = False) -> ad.AnnData:
     return sc.read_h5ad(p)
 
 
+def _parse_kovtonyuk_sample(name: str) -> dict:
+    """WT_2mo_1 / IL1RIKO_1y_2 / GF_2mo_1 → genotype, ages, Young/Old gate bin."""
+    m = re.match(r"^(WT|IL1RIKO|GF)_(2mo|1y|2y)_(\d+)$", str(name))
+    if not m:
+        raise ValueError(f"unrecognized Kovtonyuk sample: {name}")
+    geno_raw, age_raw, rep = m.groups()
+    geno = {"WT": "WT", "IL1RIKO": "IL1R1KO", "GF": "GF"}[geno_raw]
+    age_months = {"2mo": 2.0, "1y": 12.0, "2y": 24.0}[age_raw]
+    # Gate bin for inflammaging prior (matches chip_metabolic Young/Old)
+    young_old = "Young" if age_raw == "2mo" else "Old"
+    age_group = "young" if age_raw == "2mo" else "old"
+    return {
+        "sample_name": str(name),
+        "genotype": geno,
+        "age_raw": age_raw,
+        "age_label": age_raw,
+        "age_group": age_group,
+        "age_months": age_months,
+        "young_old_bin": young_old,
+        "replicate": int(rep),
+        "dataset": "Kovtonyuk2022",
+        "technical_batch": "Kovtonyuk_GSE163503_Smartseq2",
+        "assay": "Smart-seq2_DESeq2norm",
+        "lineage": "HSPC",
+        "cell_type": "HSC",
+    }
+
+
+def build_gse163503_counts(*, force: bool = False) -> Path:
+    """Kovtonyuk GSE163503: DESeq2-normalized bulk HSC counts → symbol AnnData."""
+    cfg = PATHS["gse163503"]
+    out: Path = cfg["source"]
+    if out.exists() and not force:
+        return out
+    raw: Path = cfg["raw"]
+    emap_path: Path = cfg["ensembl_map"]
+    if not raw.exists():
+        raise FileNotFoundError(
+            f"Missing {raw}. Download GEO suppl GSE163503_normalized_counts.csv.gz"
+        )
+    if not emap_path.exists():
+        raise FileNotFoundError(
+            f"Missing {emap_path}. Build Ensembl→symbol from NCBI "
+            "Mus_musculus.gene_info Ensembl xrefs."
+        )
+    counts = pd.read_csv(raw, index_col=0)
+    emap = (
+        pd.read_csv(emap_path, sep="\t")
+        .drop_duplicates("ensembl_gene_id")
+        .set_index("ensembl_gene_id")["symbol"]
+    )
+    symbols = pd.Series(counts.index.astype(str).map(emap), index=counts.index)
+    keep = symbols.notna() & symbols.astype(str).ne("")
+    counts = counts.loc[keep.values]
+    symbols = symbols.loc[keep.values].astype(str)
+    counts.index = symbols.to_numpy()
+    counts = counts.groupby(level=0).mean()
+    meta = pd.DataFrame([_parse_kovtonyuk_sample(c) for c in counts.columns])
+    meta.index = counts.columns.astype(str)
+    X = sparse.csr_matrix(counts.T.to_numpy(dtype=np.float32))
+    a = ad.AnnData(X, obs=meta, var=pd.DataFrame(index=counts.index.astype(str)))
+    a.var_names_make_unique()
+    a.uns["expression_note"] = (
+        "GEO GSE163503_normalized_counts.csv.gz = DESeq2-normalized gene-level "
+        "abundances (salmon→tximeta→DESeq2), not raw integer counts."
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp.h5ad")
+    a.write_h5ad(tmp, compression="gzip")
+    tmp.replace(out)
+    print(f"  wrote counts {out} ({a.n_obs:,} × {a.n_vars:,})")
+    print(
+        f"  genotypes: {a.obs['genotype'].value_counts().to_dict()} "
+        f"ages: {a.obs['age_label'].value_counts().to_dict()}"
+    )
+    return out
+
+
+def load_gse163503_counts(*, force: bool = False) -> ad.AnnData:
+    p = build_gse163503_counts(force=force)
+    return sc.read_h5ad(p)
+
+
+def _parse_caiado_sample(alias: str, run: str) -> dict:
+    """51L_WTIL1a / 65L_Tet2IL1a / 56LR_WTPBS → genotype × treatment (no age)."""
+    m = re.match(r"^(\d+[A-Za-z]+)_(WT|Tet2)(PBS|IL1a)$", str(alias))
+    if not m:
+        raise ValueError(f"unrecognized Caiado sample alias: {alias}")
+    animal, geno_raw, treat_raw = m.groups()
+    genotype = "WT" if geno_raw == "WT" else "Tet2_het"
+    treatment = "PBS" if treat_raw == "PBS" else "IL1a"
+    condition = f"{genotype}_{treatment}"
+    return {
+        "sample_name": str(alias),
+        "run_accession": str(run),
+        "animal_id": animal,
+        "genotype": genotype,
+        "treatment": treatment,
+        "condition": condition,
+        "dataset": "Caiado2023",
+        "technical_batch": "Caiado_PRJEB56666_Smartseq2",
+        "assay": "Smart-seq2_kallisto",
+        "lineage": "HSPC",
+        "cell_type": "HSC",
+        "age_label": "challenge_young",
+        "age_group": "young",
+        "young_old_bin": "Young",
+        "note": "Exogenous IL-1α×Tet2+/- bulk HSC; not chronological Young/Old RNA-seq",
+    }
+
+
+def _deseq2_size_factors(counts: np.ndarray) -> np.ndarray:
+    """Median-of-ratios size factors (DESeq2), genes × samples → length-n_samples."""
+    x = counts.astype(np.float64)
+    pos = np.all(x > 0, axis=1)
+    if not np.any(pos):
+        # fallback: library-size factors
+        lib = x.sum(axis=0)
+        return lib / np.median(lib)
+    geo = np.exp(np.mean(np.log(x[pos]), axis=1))
+    ratios = x[pos] / geo[:, None]
+    sf = np.median(ratios, axis=0)
+    sf = np.asarray(sf, dtype=np.float64)
+    sf[~np.isfinite(sf) | (sf <= 0)] = 1.0
+    return sf
+
+
+def build_prjeb56666_counts(*, force: bool = False) -> Path:
+    """Caiado PRJEB56666: kallisto abundances → gene symbols → size-factor matrix."""
+    cfg = PATHS["prjeb56666"]
+    out: Path = cfg["source"]
+    if out.exists() and not force:
+        return out
+    kal: Path = cfg["kallisto"]
+    t2g_path: Path = cfg["t2g"]
+    meta_path: Path = cfg["ena_meta"]
+    if not t2g_path.exists():
+        raise FileNotFoundError(f"Missing {t2g_path} (GENCODE M26 transcript→gene map)")
+    if not meta_path.exists():
+        raise FileNotFoundError(f"Missing {meta_path}")
+    meta = pd.read_csv(meta_path, sep="\t")
+    if "run_accession" not in meta.columns or "sample_alias" not in meta.columns:
+        raise ValueError(f"bad ENA table columns: {list(meta.columns)}")
+    t2g = pd.read_csv(t2g_path, sep="\t", header=None, names=["transcript", "gene_id", "symbol"])
+    t2g = t2g.drop_duplicates("transcript").set_index("transcript")
+    gene_cols: dict[str, pd.Series] = {}
+    obs_rows: list[dict] = []
+    for _, row in meta.iterrows():
+        run = str(row["run_accession"])
+        alias = str(row["sample_alias"])
+        abund = kal / run / "abundance.tsv"
+        if not abund.exists():
+            raise FileNotFoundError(
+                f"Missing {abund}. Run: bash PRJEB56666/processed/quantify_kallisto.sh"
+            )
+        tab = pd.read_csv(abund, sep="\t")
+        # GENCODE FASTA headers become kallisto target_id:
+        # ENSMUST..|ENSMUSG..|...|tx_name|gene_symbol|len|biotype|
+        parts = tab["target_id"].astype(str).str.split("|", n=7, expand=True)
+        if parts.shape[1] >= 6:
+            tid = parts[0]
+            symbols = parts[5].replace({"-": pd.NA, "": pd.NA})
+            # fill missing symbols from t2g
+            miss = symbols.isna()
+            if miss.any():
+                symbols = symbols.where(~miss, tid.map(t2g["symbol"]))
+        else:
+            tid = tab["target_id"].astype(str)
+            symbols = tid.map(t2g["symbol"])
+        est = tab["est_counts"].to_numpy(dtype=np.float64)
+        keep = symbols.notna() & symbols.astype(str).ne("")
+        gdf = pd.DataFrame({"symbol": symbols[keep].astype(str), "est": est[keep]})
+        gene_est = gdf.groupby("symbol", sort=False)["est"].sum()
+        gene_cols[alias] = gene_est
+        obs_rows.append(_parse_caiado_sample(alias, run))
+    counts = pd.DataFrame(gene_cols).fillna(0.0)
+    # Drop all-zero genes
+    counts = counts.loc[counts.sum(axis=1) > 0]
+    if counts.shape[0] == 0:
+        raise RuntimeError(
+            "PRJEB56666 gene aggregation produced 0 genes — check kallisto "
+            "target_id ↔ GENCODE header parsing"
+        )
+    sf = _deseq2_size_factors(counts.to_numpy())
+    norm = counts.div(sf, axis=1)
+    obs = pd.DataFrame(obs_rows).set_index("sample_name")
+    obs = obs.loc[counts.columns.astype(str)]
+    X = sparse.csr_matrix(norm.T.to_numpy(dtype=np.float32))
+    a = ad.AnnData(X, obs=obs, var=pd.DataFrame(index=counts.index.astype(str)))
+    a.var_names_make_unique()
+    a.layers["kallisto_est_counts"] = sparse.csr_matrix(
+        counts.T.to_numpy(dtype=np.float32)
+    )
+    a.obs["size_factor"] = sf.astype(np.float32)
+    a.uns["expression_note"] = (
+        "PRJEB56666 kallisto (GENCODE M26) transcript est_counts summed to gene "
+        "symbols; X = median-of-ratios size-factor normalized (DESeq2-like)."
+    )
+    a.uns["design"] = {
+        "axes": ["genotype", "treatment"],
+        "genotype": ["WT", "Tet2_het"],
+        "treatment": ["PBS", "IL1a"],
+        "chronological_age_in_rna": False,
+        "matches_paper_fig5": True,
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp.h5ad")
+    a.write_h5ad(tmp, compression="gzip")
+    tmp.replace(out)
+    print(f"  wrote counts {out} ({a.n_obs:,} × {a.n_vars:,})")
+    print(f"  conditions: {a.obs['condition'].value_counts().to_dict()}")
+    return out
+
+
+def load_prjeb56666_counts(*, force: bool = False) -> ad.AnnData:
+    p = build_prjeb56666_counts(force=force)
+    return sc.read_h5ad(p)
+
+
+def gpu_qc_bulk_deseq(
+    a: ad.AnnData,
+    qc_batch_key: str,
+    *,
+    min_genes: int = 5000,
+    min_cells_gene: int = 3,
+    max_mt: float = 20.0,
+    gene_mad: float = 5.0,
+) -> ad.AnnData:
+    """QC for bulk / DESeq2-normalized samples (no Scrublet; log1p, no re-normalize)."""
+    _init_gpu()
+    a = a.copy()
+    _sanitize_var(a)
+    a.X = _as_csr(a.X)
+    rsc.get.anndata_to_GPU(a)
+    rsc.pp.filter_genes(a, min_cells=min_cells_gene)
+    rsc.pp.flag_gene_family(a, gene_family_name="mt", gene_family_prefix="mt-")
+    rsc.pp.calculate_qc_metrics(a, qc_vars=["mt"], log1p=False)
+    rsc.get.anndata_to_CPU(a)
+    a.obs["ribo_frac"] = _ribo_frac(a)
+
+    n_before = a.n_obs
+    keep = pd.Series(False, index=a.obs_names)
+    for _, idx in a.obs.groupby(qc_batch_key, observed=True).groups.items():
+        obs = a.obs.loc[idx]
+        log_depth = np.log1p(obs["total_counts"].astype(float))
+        d_med = float(log_depth.median())
+        d_mad = max(float((log_depth - d_med).abs().median()), 0.25)
+        depth_ok = log_depth.between(d_med - 5 * d_mad, d_med + 5 * d_mad)
+        log_genes = np.log1p(obs["n_genes_by_counts"].astype(float))
+        g_med = float(log_genes.median())
+        g_mad = max(float((log_genes - g_med).abs().median()), 0.15)
+        genes_ok = log_genes.between(g_med - gene_mad * g_mad, g_med + gene_mad * g_mad)
+        ok = (
+            depth_ok
+            & genes_ok
+            & (obs["n_genes_by_counts"].astype(float) >= min_genes)
+            & (obs["pct_counts_mt"].astype(float) < max_mt)
+        )
+        keep.loc[idx] = ok
+    a = a[keep].copy()
+    print(
+        f"  QC filter (bulk DESeq2): {a.n_obs:,} / {n_before:,} samples "
+        f"(MAD depth/genes + genes≥{min_genes} + mt<{max_mt})"
+    )
+    a.obs["predicted_doublet"] = False
+    a.obs["doublet_score"] = np.nan
+    a.layers["counts"] = a.X.copy()
+    # Size factors already applied upstream — log1p only (do not normalize_total)
+    rsc.get.anndata_to_GPU(a, convert_all=True)
+    rsc.pp.log1p(a)
+    rsc.get.anndata_to_CPU(a, convert_all=True)
+    _sanitize_var(a)
+    a.uns["preprocess"] = {
+        "mode": "bulk_deseq2_log1p",
+        "qc_batch_key": qc_batch_key,
+        "run_scrublet": False,
+        "n_doublets_removed": 0,
+        "min_genes": min_genes,
+        "max_mt": max_mt,
+        "gene_mad": gene_mad,
+        "min_cells_gene": min_cells_gene,
+        "normalize_total": False,
+        "note": "DESeq2-normalized input; layers['counts'] retains pre-log1p values",
+    }
+    return a
+
+
 def _parse_kowalczyk_cell(name: str) -> dict:
     """young_LT_HSC_2 / old_ST_HSC_biol_replicate_12 → age + FACS subset."""
     n = name.strip().strip("'")
@@ -806,6 +1298,101 @@ def build_gse59114_lognorm(*, force: bool = False) -> Path:
 
 def load_gse59114_lognorm(*, force: bool = False) -> ad.AnnData:
     p = build_gse59114_lognorm(force=force)
+    return sc.read_h5ad(p)
+
+
+def build_gse209994_counts(*, force: bool = False) -> Path:
+    """Tet2 WT/KO × vehicle/IL-1β Lin− BM (filtered_feature_bc_matrix MTX)."""
+    cfg = PATHS["gse209994"]
+    out: Path = cfg["source"]
+    if out.exists() and not force:
+        return out
+    raw: Path = cfg["raw"]
+    if not raw.exists():
+        raise FileNotFoundError(
+            f"Missing {raw}. Download GEO suppl filtered_feature_bc_matrix MTX for GSE209994"
+        )
+    parts: list[ad.AnnData] = []
+    for key, meta in GSE209994_SAMPLES.items():
+        staged = _stage_geo_mtx_dir(raw, key, gene_glob="features")
+        a = sc.read_10x_mtx(staged, var_names="gene_symbols", cache=False)
+        a.var_names_make_unique()
+        a.obs_names = [f"{key}_{b}" for b in a.obs_names]
+        a.obs["sample_name"] = key
+        a.obs["gsm"] = key  # pooled libraries; GSM-level split is HTO (not required for counts)
+        a.obs["dataset"] = "CHIP_GSE209994"
+        a.obs["technical_batch"] = "CHIP_GSE209994_10x"
+        a.obs["assay"] = "10x"
+        a.obs["tissue"] = "bone_marrow"
+        a.obs["lineage"] = "Other"
+        a.obs["cell_type"] = "Lin_neg_BM"
+        for k, v in meta.items():
+            a.obs[k] = v
+        print(f"  {key}: {a.n_obs:,} × {a.n_vars:,}")
+        parts.append(a)
+    combined = _concat_samples(parts)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp.h5ad")
+    combined.write_h5ad(tmp, compression="gzip")
+    tmp.replace(out)
+    print(f"  wrote counts {out} ({combined.n_obs:,} × {combined.n_vars:,})")
+    return out
+
+
+def load_gse209994_counts(*, force: bool = False) -> ad.AnnData:
+    p = build_gse209994_counts(force=force)
+    return sc.read_h5ad(p)
+
+
+def build_gse298597_counts(*, force: bool = False) -> Path:
+    """WT/Tet2/Dnmt3a transplant → 5xFAD brain (raw_feature_bc_matrix.h5)."""
+    cfg = PATHS["gse298597"]
+    out: Path = cfg["source"]
+    if out.exists() and not force:
+        return out
+    raw: Path = cfg["raw"]
+    if not raw.exists():
+        raise FileNotFoundError(
+            f"Missing {raw}. Download/extract GSE298597_RAW.tar (*.raw_feature_bc_matrix.h5)"
+        )
+    parts: list[ad.AnnData] = []
+    for key, meta in GSE298597_SAMPLES.items():
+        h5 = raw / f"{key}.raw_feature_bc_matrix.h5"
+        if not h5.exists():
+            raise FileNotFoundError(f"Missing {h5} (extract GSE298597_RAW.tar under {raw})")
+        a = sc.read_10x_h5(h5)
+        a.var_names_make_unique()
+        # GEO deposits raw_feature_bc_matrix.h5 (all Cell Ranger barcodes).
+        # Drop empty droplets before concat or the joint is tens of millions of rows.
+        n_raw = a.n_obs
+        sc.pp.filter_cells(a, min_genes=200)
+        print(f"  {key}: {n_raw:,} → {a.n_obs:,} × {a.n_vars:,} (min_genes=200)")
+        a.obs_names = [f"{key}_{b}" for b in a.obs_names]
+        a.obs["sample_name"] = key
+        a.obs["gsm"] = key.split("_")[0]
+        a.obs["dataset"] = "CHIP_GSE298597"
+        a.obs["technical_batch"] = "CHIP_GSE298597_10x"
+        a.obs["assay"] = "10x"
+        a.obs["tissue"] = "brain"
+        a.obs["lineage"] = "Other"
+        a.obs["cell_type"] = "brain_myeloid_enriched"
+        a.obs["age_months"] = np.nan
+        a.obs["age_label"] = "NA"
+        a.obs["age_group"] = "NA"
+        for k, v in meta.items():
+            a.obs[k] = v
+        parts.append(a)
+    combined = _concat_samples(parts)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp.h5ad")
+    combined.write_h5ad(tmp, compression="gzip")
+    tmp.replace(out)
+    print(f"  wrote counts {out} ({combined.n_obs:,} × {combined.n_vars:,})")
+    return out
+
+
+def load_gse298597_counts(*, force: bool = False) -> ad.AnnData:
+    p = build_gse298597_counts(force=force)
     return sc.read_h5ad(p)
 
 
@@ -955,6 +1542,50 @@ def process_dataset(
             gene_mad=4.0,
             run_scrublet=run_scrublet,
         )
+    elif name == "gse209994":
+        a = load_gse209994_counts(force=force)
+        a = gpu_qc_preprocess(
+            a,
+            qc_batch_key="sample_name",
+            scrublet_batch_key="sample_name",
+            run_scrublet=run_scrublet,
+        )
+    elif name == "gse298597":
+        # Brain myeloid-enriched; broader QC than Lin− BM HSPC sorts
+        a = load_gse298597_counts(force=force)
+        a = gpu_qc_preprocess(
+            a,
+            qc_batch_key="sample_name",
+            scrublet_batch_key="sample_name",
+            min_genes=200,
+            max_mt=20.0,
+            max_ribo=0.30,
+            gene_mad=5.0,
+            run_scrublet=run_scrublet,
+        )
+    elif name == "gse163503":
+        # Bulk DESeq2-normalized HSC Smart-seq2 — no Scrublet; log1p only
+        a = load_gse163503_counts(force=force)
+        a = gpu_qc_bulk_deseq(
+            a,
+            qc_batch_key="genotype",
+            min_genes=5000,
+            min_cells_gene=3,
+            max_mt=20.0,
+            gene_mad=5.0,
+        )
+    elif name == "prjeb56666":
+        # Caiado bulk HSC WT/Tet2 × PBS/IL-1α — no Scrublet; log1p only
+        # mt% runs ~12–20.5 on size-factor matrix; paper kept all 15 (Fig 5 ns)
+        a = load_prjeb56666_counts(force=force)
+        a = gpu_qc_bulk_deseq(
+            a,
+            qc_batch_key="genotype",
+            min_genes=5000,
+            min_cells_gene=3,
+            max_mt=25.0,
+            gene_mad=5.0,
+        )
     else:
         raise ValueError(name)
 
@@ -964,8 +1595,8 @@ def process_dataset(
         # Yang / Mitchell: marker argmax when unlabeled or mostly Other.
         if name == "gse246464" and "lineage" in a.obs:
             a.obs["facs_lineage"] = a.obs["lineage"].astype(str)
-        overwrite = name in {"gse169162", "gse169608", "gse246464"} and (
-            name == "gse246464"
+        overwrite = name in {"gse169162", "gse169608", "gse246464", "gse209994", "gse298597"} and (
+            name in {"gse246464", "gse209994", "gse298597"}
             or "lineage" not in a.obs
             or (a.obs["lineage"] == "Other").mean() > 0.5
         )
@@ -996,6 +1627,7 @@ def process_dataset(
         "age_group",
         "age_months",
         "age_bin",
+        "young_old_bin",
         "lineage",
         "genotype",
         "sample_name",
@@ -1048,8 +1680,8 @@ def patch_age_bin_cached() -> None:
         p = cfg.get("out")
         if p is not None and Path(p).exists():
             targets.append(Path(p))
-    joint = BONE / "results" / "joint_hsc_aging" / "age_core_scgen.h5ad"
-    hold = BONE / "results" / "joint_hsc_aging" / "su_holdout_adult_juvenile_sharedgenes.h5ad"
+    joint = RESULTS / "joint_hsc_aging" / "age_core_scgen.h5ad"
+    hold = RESULTS / "joint_hsc_aging" / "su_holdout_adult_juvenile_sharedgenes.h5ad"
     for p in (joint, hold):
         if p.exists():
             targets.append(p)
@@ -1080,7 +1712,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "--dataset",
-        choices=[*ALL_DATASETS, "age_core", "all"],
+        choices=[*ALL_DATASETS, "age_core", "chip_pilot", "all"],
         default="gse169608",
     )
     ap.add_argument("--force", action="store_true", help="Ignore cached outputs")
@@ -1123,6 +1755,8 @@ def main() -> None:
     elif args.dataset == "age_core":
         # scGen-ready integer counts only (excludes GSE59114 log-norm reference)
         names = [*AGE_CORE_PLATESEQ, *AGE_CORE_10X]
+    elif args.dataset == "chip_pilot":
+        names = list(CHIP_PILOT_10X)
     else:
         names = [args.dataset]
 
@@ -1138,16 +1772,20 @@ def main() -> None:
         )
 
     if len(outs) > 1:
-        write_joint_manifest(
-            outs, BONE / "results" / "joint_hsc_aging" / "preprocess_manifest.json"
+        dest = (
+            RESULTS / "chip_pilot" / "preprocess_manifest.json"
+            if set(outs) <= set(CHIP_PILOT_10X)
+            else RESULTS / "joint_hsc_aging" / "preprocess_manifest.json"
         )
+        write_joint_manifest(outs, dest)
         print(
             "\nJoint next step: concat on shared genes with batch_key=technical_batch, "
             "then scGen batch_removal + young↔old transfer; Yang lineage via markers/scGen."
         )
         print(
             "Optional (not in age_core): gse70657 young/old counts; "
-            "gse59114 log2(TPM+1) reference — neither adds an adult midpoint."
+            "gse59114 log2(TPM+1) reference — neither adds an adult midpoint; "
+            "chip_pilot gse209994+gse298597 stay separate from age_core scGen."
         )
 
 

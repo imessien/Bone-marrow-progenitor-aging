@@ -28,7 +28,7 @@
   year    = {2023},
   doi     = {10.1038/s41556-022-01053-0},
   pmcid   = {PMC7614279},
-  note    = {MAIN: Stromal niche IL-1 signalling drives haematopoietic ageing; IL-1 blockade ameliorates niche inflammation and aged HSC dysfunction.}
+  note    = {MAIN: Stromal niche IL-1 signalling drives haematopoietic ageing; IL-1 blockade ameliorates niche inflammation and aged HSC dysfunction. GEO SuperSeries GSE169162 (scRNA GSE168586/GSE189217); IL1R1KO deposit is old-only.}
 }
 
 @article{Lalioti2025HSCmetabolome,
@@ -519,6 +519,19 @@
   note    = {Review: low-level IL-1 drives HSPC inflammaging, CHIP, and myeloid neoplasia; IL-1 pathway inhibition. PII S0006497124013818. Paperclip: oa\_4398246949.}
 }
 
+@article{Kim2026TET2metabolism,
+  title   = {Metabolic control of innate immune activation in {TET2}-mutant clonal hematopoiesis},
+  author  = {Kim, Peter Geon and Hergott, Christopher B. and Miller, Aidan P. and Deik, Amy and Boileau, Meaghan and Bullock, Kevin and Pierce, Kerry A. and Choy, Angelina H. and Shin, Wesley and McConkey, Marie and Loke, Justin and Ryback, Birgitta A. and Trinh, Michael N. and Rutter, Justine C. and Yue, Hong and Yoon, Hojong and Park, Paul and Roy Burman, Shourya S. and Vander Heiden, Matthew G. and Fischer, Eric S. and Armstrong, Scott A. and Clish, Clary and Ebert, Benjamin L.},
+  journal = {Cell Chemical Biology},
+  volume  = {33},
+  number  = {2},
+  pages   = {183--197},
+  year    = {2026},
+  month   = feb,
+  doi     = {10.1016/j.chembiol.2026.01.006},
+  note    = {Primary: in vivo CRISPR screen; Tet2 restrains OGT; Tet2 loss $\to$ O-GlcNAc $\to$ H3K4me3 / lipid anabolism via ACLY; ACLY inhibition blunts Tet2 KO hyperinflammation (incl. Il1b). Local PDF: 1-s2.0-S2451945626000267-main.pdf. Complements Ni{\~n}o2026 oxidative metabolism (preprint) and McClatchy/Caiado IL-1$\times$Tet2 selection papers.}
+}
+
 @article{Zhang2025CHIPmultisystem,
   title   = {Clonal hematopoiesis of indeterminate potential: a multisystem hub bridging hematopoietic dysfunction with non-hematopoietic diseases},
   author  = {Zhang, Jing-Lei and Tong, Shuo-Lan and Zhuang, Qi-Qi and Jin, Sheng-Jie and Li, Jia-Qiu and Sun, Jie},
@@ -545,3 +558,104 @@
   pmcid   = {PMC13184274},
   note    = {Review: aging BM niche (osteogenic--vascular crosstalk, systemic cues); whether aged BM drives vs. rides malignancy/inflammation; organoids and organ-on-chip rejuvenation platforms. Paperclip: PMC13184274.}
 }
+
+% ---------------------------------------------------------------------------
+% IL-1 / inflammaging primary + GEO / GSEA resources
+% ---------------------------------------------------------------------------
+
+@article{Sun2014AgedHSCepigenome,
+  title   = {Epigenomic profiling of young and aged {HSCs} reveals concerted changes during aging that reinforce self-renewal},
+  author  = {Sun, Deqiang and Luo, Min and Jeong, Mira and Rodriguez, Benjamin and Xia, Zheng and Hannah, Rebecca and Wang, Hui and Le, Thuc and Faull, Kym F. and Chen, Rui and Gu, Hongcang and Bock, Christoph and Meissner, Alexander and G{\"o}ttgens, Berthold and Darlington, Gretchen J. and Li, Wei and Goodell, Margaret A.},
+  journal = {Cell Stem Cell},
+  volume  = {14},
+  number  = {5},
+  pages   = {673--688},
+  year    = {2014},
+  month   = may,
+  doi     = {10.1016/j.stem.2014.03.002},
+  pmid    = {24792119},
+  note    = {PII S1934-5909(14)00096-4. Young vs aged murine HSC transcriptome/epigenome; aging reinforces self-renewal programs. URL: https://www.cell.com/cell-stem-cell/fulltext/S1934-5909(14)00096-4.}
+}
+
+@article{Pietras2016IL1HSC,
+  title   = {Chronic interleukin-1 exposure drives haematopoietic stem cells towards precocious myeloid differentiation at the expense of self-renewal},
+  author  = {Pietras, Eric M. and Mirantes-Barbeito, Cristina and Fong, Sarah and Loeffler, Dirk and Kovtonyuk, Larisa V. and Zhang, SiYi and Lakshminarasimhan, Ranjani and Chin, Chih Peng and Techner, Jos{\'e}-Marc and Will, Britta and Nerlov, Claus and Steidl, Ulrich and Manz, Markus G. and Schroeder, Timm and Passegu{\'e}, Emmanuelle},
+  journal = {Nature Cell Biology},
+  volume  = {18},
+  number  = {6},
+  pages   = {607--618},
+  year    = {2016},
+  month   = jun,
+  doi     = {10.1038/ncb3346},
+  pmid    = {27111842},
+  pmcid   = {PMC4884136},
+  note    = {Chronic IL-1 accelerates HSC division and myeloid differentiation via PU.1; reversible upon IL-1 withdrawal. Core IL-1$\to$myeloid-bias mechanism paper.}
+}
+
+@inproceedings{Kovtonyuk2019ASHIL1,
+  title     = {Inflammageing of Hematopoietic Stem Cells Is Driven By {IL-1}},
+  author    = {Kovtonyuk, Larisa V. and Caiado, Francisco and Slack, Emma Marie Caroline and Takizawa, Hitoshi and Manz, Markus G.},
+  booktitle = {Blood},
+  volume    = {134},
+  number    = {Supplement_1},
+  pages     = {819},
+  year      = {2019},
+  doi       = {10.1182/blood-2019-130361},
+  note      = {ASH 2019 abstract; microbiome/IL-1 inflammaging of HSCs. Full study: Kovtonyuk2022IL1Microbiome (GSE163503).}
+}
+
+@article{Kovtonyuk2022IL1Microbiome,
+  title   = {{IL-1} mediates microbiome-induced inflammaging of hematopoietic stem cells in mice},
+  author  = {Kovtonyuk, Larisa V. and Caiado, Francisco and Garcia-Martin, Santiago and Manz, Eva-Maria and Helbling, Patrick and Takizawa, Hitoshi and Boettcher, Steffen and Al-Shahrour, Fatima and Nombela-Arrieta, Cesar and Slack, Emma and Manz, Markus G.},
+  journal = {Blood},
+  volume  = {139},
+  number  = {1},
+  pages   = {44--58},
+  year    = {2022},
+  month   = jan,
+  doi     = {10.1182/blood.2021011570},
+  pmid    = {34525198},
+  note    = {GEO GSE163503: bulk RNA-seq of BM HSCs; WT and IL1R1KO at 2\,mo / 1\,y / 2\,y (GF at 2\,mo / 1\,y). Has young+aged IL1R1KO (fills genotype$\times$age for bulk HSC signatures; not scRNA trajectories). GSEA used MSigDB v7.2 Hallmark + Reactome. URL: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE163503.}
+}
+
+@misc{GSE169162Mitchell,
+  title        = {{GSE169162}: Stromal niche inflammation mediated by {IL-1} signaling is a targetable driver of hematopoietic aging},
+  author       = {Mitchell, Carl A. and Passegu{\'e}, Emmanuelle},
+  year         = {2022},
+  howpublished = {Gene Expression Omnibus},
+  url          = {https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE169162},
+  note         = {SuperSeries for Mitchell2023StromalMAIN (scRNA GSE168586/GSE189217 + array). IL1R1KO libraries are old-only in the deposit --- young KO missing for sc age-persistence.}
+}
+
+@misc{GSE163503Kovtonyuk,
+  title        = {{GSE163503}: {IL-1} Mediates Microbiome-Induced Inflamm-Aging of Hematopoietic Stem Cells},
+  author       = {Kovtonyuk, Larisa V. and Caiado, Francisco and Manz, Markus G.},
+  year         = {2021},
+  howpublished = {Gene Expression Omnibus},
+  url          = {https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE163503},
+  note         = {30 bulk BM HSC RNA-seq samples; companion to Kovtonyuk2022IL1Microbiome. Processed: GSE163503\_normalized\_counts.csv.gz.}
+}
+
+@article{Liberzon2015MSigDBHallmarks,
+  title   = {The {Molecular Signatures Database} ({MSigDB}) hallmark gene set collection},
+  author  = {Liberzon, Arthur and Birger, Chet and Thorvaldsd{\'o}ttir, Helga and Ghandi, Mahmoud and Mesirov, Jill P. and Tamayo, Pablo},
+  journal = {Cell Systems},
+  volume  = {1},
+  number  = {6},
+  pages   = {417--425},
+  year    = {2015},
+  month   = dec,
+  doi     = {10.1016/j.cels.2015.12.004},
+  pmid    = {26771021},
+  note    = {Hallmark collection; Kovtonyuk2022 used h.all.v7.2.symbols.gmt from MSigDB release 7.2.}
+}
+
+@misc{MSigDBv72,
+  title        = {{MSigDB} gene sets release 7.2},
+  author       = {{Broad Institute}},
+  year         = {2020},
+  howpublished = {Molecular Signatures Database},
+  url          = {https://data.broadinstitute.org/gsea-msigdb/msigdb/release/7.2/},
+  note         = {Files used in Kovtonyuk2022 GSEA: h.all.v7.2.symbols.gmt and c2.cp.reactome.v7.2.symbols.gmt.}
+}
+

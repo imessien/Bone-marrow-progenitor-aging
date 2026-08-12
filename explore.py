@@ -1,22 +1,13 @@
-"""Age-core mouse BM HSC→GMP aging atlas (CLI).
+"""Age-core BM atlas: scGen joint → GMP vs agedHSC fate package.
 
-Pipeline:
-  1. Load QC'd age-core h5ads from ``preprocess_manifest.json``
-  2. Keep HSC→GMP axis (``HSPC`` + ``Myeloid_prog``); Elias uses marker lineage
-  3. Shared-gene concat (``gene_join=inner``); ``batch_key=technical_batch``
-  4. scGen ``batch_removal`` → UMAP on ``corrected_latent``
-  5. Optional: young↔old condition transfer on HSPC
-  6. DPT pseudotime + age_bin / marker stream plots via ``plotting``
-
-Outputs: ``results/joint_hsc_aging/`` on the bone store
-(``/cis/net/r41/data/iessien1/bone/results/joint_hsc_aging``).
+Absorption fate on the neighbor graph (late GMP vs agedHSC), then fate UMAP,
+driver-gene correlation, and ending GSEA.
 
 Usage:
   source .venv/bin/activate
-  python preprocess.py --dataset age_core --annotate
-  python explore.py --skip-transfer
-  python explore.py --pseudotime-only
-  python explore.py --path-gnn
+  python explore.py              # fate UMAP + drivers + GSEA
+  python explore.py --train      # rebuild scGen + UMAP + DPT, then fate
+  python -c "import explore; explore._self_check()"
 """
 
 from __future__ import annotations
@@ -27,51 +18,43 @@ import os
 import warnings
 from pathlib import Path
 
-# numba/scanpy cache fails in some sandboxes without an explicit cache dir
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from anndata import AnnData
+from scipy import sparse
+
 os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache_bone_marrow")
 
 BONE = Path("/cis/net/r41/data/iessien1/bone")
-RESULTS = BONE / "results" / "joint_hsc_aging"
-MANIFEST = RESULTS / "preprocess_manifest.json"
-JOINT_OUT = RESULTS
+RESULTS = Path("/cis/net/r41/data/iessien1/bone_marrow_results")
+JOINT_OUT = RESULTS / "joint_hsc_aging"
+MANIFEST = JOINT_OUT / "preprocess_manifest.json"
 JOINT_H5AD = JOINT_OUT / "age_core_scgen.h5ad"
+LABELED_H5AD = JOINT_OUT / "age_core_scgen_labeled.h5ad"
 JOINT_FULL_H5AD = JOINT_OUT / "age_core_fullgene.h5ad"
-TRANSFER_H5AD = JOINT_OUT / "age_core_young_old_transfer.h5ad"
-UMAP_PNG = JOINT_OUT / "umap_age_core_scgen.png"
-ELIAS_UMAP_PNG = JOINT_OUT / "umap_elias_gsm_check.png"
-AGE_BIN_UMAP_PNG = JOINT_OUT / "umap_age_bin_scgen.png"
-MARKER_STREAM_PNG = JOINT_OUT / "stream_markers_scgen.png"
-
-# HSC→GMP axis markers (same panels as preprocess); used for stream QC plots
-AXIS_MARKERS: tuple[str, ...] = (
-    "Procr",
-    "Kit",
-    "Cd34",
-    "Flt3",
-    "Mpo",
-    "Elane",
-    "Ms4a3",
-    "Cebpe",
-)
-SU_HOLDOUT_JSON = JOINT_OUT / "su_holdout_age_summary.json"
 
 AXIS_LINEAGES = ("HSPC", "Myeloid_prog")
-ELIAS_GSMS = (
-    "GSM7869307",  # HSC young rep1
-    "GSM7869308",  # HSC old rep1
-    "GSM7869309",  # HSC young rep2
-    "GSM7869310",  # HSC old rep2
-)
-ELIAS_DATASET = "Elias2025"
-ELIAS_BATCH = "Elias_GSE246464_10x"
+TYPE_ORDER = ("HSC", "agedHSC", "MPP", "GMP")
+TYPE_COLOR = {
+    "HSC": "#2a6f6f",
+    "agedHSC": "#b85c38",
+    "MPP": "#6b7c3d",
+    "GMP": "#4a5568",
+}
+FINE_MARKERS = {
+    "HSC": ("Procr", "Hlf", "Mecom", "Hoxa9"),
+    "agedHSC": ("Vwf", "Wwtr1", "Clca3a1"),
+    "MPP": ("Flt3", "Cd34", "Kit", "Ly6a"),
+    "GMP": ("Elane", "Mpo", "Ctsg", "Ms4a3", "Cebpe"),
+}
+FATE_GMP = "fate_GMP"
+FATE_AGED = "fate_agedHSC"
+GMP_DPT_Q = 0.80
 
 
 def _as_csr(X):
-    from scipy import sparse
-
-    if sparse.issparse(X):
-        return X.tocsr()
-    return sparse.csr_matrix(X)
+    return X.tocsr() if sparse.issparse(X) else sparse.csr_matrix(X)
 
 
 def _init_gpu() -> None:
@@ -81,7 +64,7 @@ def _init_gpu() -> None:
     from rmm.allocators.cupy import rmm_cupy_allocator
 
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA GPU required for rapids-singlecell HVG / neighbors.")
+        raise RuntimeError("CUDA GPU required for rapids-singlecell.")
     rmm.reinitialize(managed_memory=False, pool_allocator=False, devices=0)
     cp.cuda.set_allocator(rmm_cupy_allocator)
 
@@ -95,14 +78,11 @@ def load_manifest(path: Path = MANIFEST) -> list[dict]:
 
 
 def _age_bin_from_months(m) -> str:
-    """early ≤2.5; mid (2.5, 8]; late ≥18; else unassigned."""
-    if m is None:
-        return "unassigned"
     try:
         x = float(m)
     except (TypeError, ValueError):
         return "unassigned"
-    if x != x:  # NaN
+    if m is None or x != x:
         return "unassigned"
     if x <= 2.5:
         return "early"
@@ -114,14 +94,10 @@ def _age_bin_from_months(m) -> str:
 
 
 def _harmonize_obs(a, dataset_key: str):
-    """Fill shared obs columns used by scGen + UMAP checks."""
-    import pandas as pd
-
     if "gsm" not in a.obs.columns:
-        if "sample_name" in a.obs:
-            a.obs["gsm"] = a.obs["sample_name"].astype(str)
-        else:
-            a.obs["gsm"] = dataset_key
+        a.obs["gsm"] = (
+            a.obs["sample_name"].astype(str) if "sample_name" in a.obs else dataset_key
+        )
     if "rep" not in a.obs.columns:
         a.obs["rep"] = "NA"
     if "age_group" not in a.obs.columns and "age_label" in a.obs.columns:
@@ -137,9 +113,6 @@ def _harmonize_obs(a, dataset_key: str):
                 "20mo": "old",
             }
         ).fillna(lab)
-    # Binary condition for young↔old transfer (drop adult from transfer train)
-    ag = a.obs["age_group"].astype(str)
-    a.obs["age_condition"] = ag.where(ag.isin(["young", "old"]), other="exclude")
     if "age_months" in a.obs:
         a.obs["age_months"] = pd.to_numeric(a.obs["age_months"], errors="coerce")
         a.obs["age_bin"] = a.obs["age_months"].map(_age_bin_from_months).astype(str)
@@ -147,111 +120,48 @@ def _harmonize_obs(a, dataset_key: str):
         a.obs["age_bin"] = "unassigned"
     a.obs["cell_type"] = a.obs["lineage"].astype(str)
     a.obs["dataset_key"] = dataset_key
-    for col in (
-        "dataset",
-        "technical_batch",
-        "lineage",
-        "age_label",
-        "age_group",
-        "age_bin",
-        "age_condition",
-        "genotype",
-        "gsm",
-        "sample_name",
-        "rep",
-        "cell_type",
-        "dataset_key",
-    ):
-        if col in a.obs:
+    for col in a.obs.columns:
+        if a.obs[col].dtype == object or str(a.obs[col].dtype) == "category":
             a.obs[col] = a.obs[col].astype(str)
     return a
 
 
-def load_age_core_axis(
-    *,
-    lineages: tuple[str, ...] = AXIS_LINEAGES,
-    wt_only: bool = False,
-    gene_join: str = "inner",
-    exclude_datasets: tuple[str, ...] = ("su2024",),
-) -> "ad.AnnData":
-    """Shared-gene concat of QC'd age-core sets on the HSC→GMP axis.
-
-    ``gene_join='inner'`` (default) avoids outer-join zero-fill artifacts that
-    isolate Smart-seq2 (Su) and multiome RNA (Elias) in UMAP space.
-
-    Su2024 is excluded by default: Smart-seq2 depth/feature space does not mix
-    with 10x under scGen batch_removal even after symbol/QC fixes (pinpoint
-    streaks). Pass ``exclude_datasets=()`` to force-include.
-    """
+def load_age_core_axis(*, gene_join: str = "inner", exclude_datasets=("su2024",)):
     import anndata as ad
-    import numpy as np
     import scanpy as sc
-    from scipy import sparse
-
-    if gene_join not in {"inner", "outer"}:
-        raise ValueError(f"gene_join must be inner|outer, got {gene_join}")
 
     exclude = set(exclude_datasets)
     entries = [e for e in load_manifest() if e["dataset"] not in exclude]
-    skipped = sorted({e["dataset"] for e in load_manifest()} & exclude)
-    if skipped:
-        print(f"  excluding from joint: {skipped}")
     parts = []
     for e in entries:
         a = sc.read_h5ad(e["path"])
         a.var_names_make_unique()
         a.obs_names_make_unique()
         a = _harmonize_obs(a, e["dataset"])
-        keep = a.obs["lineage"].astype(str).isin(lineages)
-        if wt_only and "genotype" in a.obs:
-            keep = keep & (a.obs["genotype"].astype(str) == "WT")
-        # Extra artifact gate for Elias multiome / Su Smart-seq2
+        keep = a.obs["lineage"].astype(str).isin(AXIS_LINEAGES)
         if e["dataset"] == "gse246464":
             ng = a.obs["n_genes"] if "n_genes" in a.obs else a.obs["n_genes_by_counts"]
             keep = keep & (ng.astype(float) >= 2000)
             keep = keep & (a.obs["pct_counts_mt"].astype(float) < 10.0)
-            if "ribo_frac" in a.obs:
-                keep = keep & (a.obs["ribo_frac"].astype(float) < 0.25)
-            if "score_HSPC" in a.obs:
-                keep = keep & (
-                    (a.obs["lineage"].astype(str) != "HSPC")
-                    | (a.obs["score_HSPC"].astype(float) >= 0.2)
-                )
-        if e["dataset"] == "su2024":
-            ng = a.obs["n_genes_by_counts"] if "n_genes_by_counts" in a.obs else a.obs.get("n_genes")
-            if ng is not None:
-                keep = keep & (ng.astype(float) >= 2000)
-            keep = keep & (a.obs["pct_counts_mt"].astype(float) < 5.0)
-            if "ribo_frac" in a.obs:
-                keep = keep & (a.obs["ribo_frac"].astype(float) < 0.15)
         a = a[keep].copy()
         if a.n_obs == 0:
-            print(f"  skip {e['dataset']}: 0 cells after lineage/QC filter")
             continue
         if "counts" not in a.layers:
             raise RuntimeError(f"{e['path']} missing layers['counts']")
         a.layers["counts"] = _as_csr(a.layers["counts"])
-        # Prefer log-normalized X from preprocess; fall back to counts→normalize
         if sparse.issparse(a.X):
             xmax = float(a.X.data.max()) if a.X.nnz else 0.0
         else:
             xmax = float(np.asarray(a.X).max()) if a.n_obs else 0.0
-        if xmax > 50:  # looks like raw counts left in X
+        if xmax > 50:
             a.X = a.layers["counts"].copy()
             sc.pp.normalize_total(a, target_sum=1e4)
             sc.pp.log1p(a)
-        tag = e["dataset"]
-        a.obs_names = [f"{tag}_{x}" for x in a.obs_names]
-        print(
-            f"  {tag}: {a.n_obs:,} × {a.n_vars:,} | "
-            f"batch={a.obs['technical_batch'].iloc[0]} | "
-            f"ages={a.obs['age_group'].value_counts().to_dict()}"
-        )
+        a.obs_names = [f"{e['dataset']}_{x}" for x in a.obs_names]
+        print(f"  {e['dataset']}: {a.n_obs:,} × {a.n_vars:,}")
         parts.append(a)
-
     if not parts:
         raise RuntimeError("No age-core cells after filtering")
-
     joint = ad.concat(parts, join=gene_join, merge="same", index_unique=None)
     joint.obs_names_make_unique()
     joint.X = _as_csr(joint.X)
@@ -259,32 +169,18 @@ def load_age_core_axis(
         joint.layers["counts"] = _as_csr(joint.layers["counts"])
     nnz = np.asarray(joint.X.sum(axis=0)).ravel()
     joint = joint[:, nnz > 0].copy()
-    print(
-        f"gene-{gene_join} joint: {joint.n_obs:,} cells × {joint.n_vars:,} genes | "
-        f"batches={sorted(joint.obs['technical_batch'].unique())}"
-    )
+    print(f"joint: {joint.n_obs:,} × {joint.n_vars:,}")
     return joint
 
 
-def assert_elias_gsms(joint) -> dict[str, int]:
-    """Confirm Elias GSE246464 young/old HSC replicates are present."""
-    elias = joint.obs["technical_batch"].astype(str) == ELIAS_BATCH
-    if not elias.any():
-        # fallback on dataset name
-        elias = joint.obs["dataset"].astype(str) == ELIAS_DATASET
-    sub = joint.obs.loc[elias]
-    counts = sub["gsm"].astype(str).value_counts().to_dict()
-    missing = [g for g in ELIAS_GSMS if counts.get(g, 0) == 0]
-    if missing:
-        raise RuntimeError(
-            f"Elias GSMs missing from joint object: {missing}; have={counts}"
-        )
-    print("Elias GSE246464 GSM counts:", {g: counts[g] for g in ELIAS_GSMS})
-    return counts
+def _latent_key(adata) -> str:
+    for k in ("corrected_latent", "X_scgen", "latent"):
+        if k in adata.obsm:
+            return k
+    raise KeyError(f"no scGen latent; have {list(adata.obsm)}")
 
 
-def run_scgen_batch_removal(joint, *, max_epochs: int = 100, n_top_genes: int = 7000):
-    """HVG → scGen batch_removal with batch_key=technical_batch."""
+def run_scgen(joint, *, max_epochs: int = 100, n_top_genes: int = 7000):
     import rapids_singlecell as rsc
     import scgen
     import torch
@@ -303,23 +199,17 @@ def run_scgen_batch_removal(joint, *, max_epochs: int = 100, n_top_genes: int = 
     adata.raw = adata.copy()
     JOINT_OUT.mkdir(parents=True, exist_ok=True)
     adata.write_h5ad(JOINT_FULL_H5AD)
-    print(f"full-gene → {JOINT_FULL_H5AD}")
 
     hvg = adata[:, adata.var["highly_variable"]].copy()
     hvg.obs["cell_type"] = hvg.obs["lineage"].astype(str)
-    scgen.SCGEN.setup_anndata(
-        hvg,
-        batch_key="technical_batch",
-        labels_key="cell_type",
-    )
+    scgen.SCGEN.setup_anndata(hvg, batch_key="technical_batch", labels_key="cell_type")
     model = scgen.SCGEN(hvg, n_latent=30)
-    n_gpu = torch.cuda.device_count()
     model.train(
         max_epochs=max_epochs,
         batch_size=128,
         early_stopping=True,
         early_stopping_patience=25,
-        accelerator="gpu" if n_gpu else "cpu",
+        accelerator="gpu" if torch.cuda.device_count() else "cpu",
         devices=1,
     )
     model.save(JOINT_OUT / "scgen_batch_removal", overwrite=True)
@@ -328,67 +218,22 @@ def run_scgen_batch_removal(joint, *, max_epochs: int = 100, n_top_genes: int = 
     if corrected.raw is None and adata.raw is not None:
         corrected.raw = adata.raw
     corrected.obsm["X_scgen"] = corrected.obsm["latent"].copy()
-    corrected.uns["integration"] = {
-        "method": "scGen",
-        "batch_key": "technical_batch",
-        "labels_key": "cell_type",
-        "lineages": list(AXIS_LINEAGES),
-        "n_gpu": int(n_gpu),
-        "elias_gsms": list(ELIAS_GSMS),
-    }
-    # hvg retains pre-correction X for a separate young↔old condition model
-    return corrected, model, hvg
+    return corrected
 
 
-def resolve_scgen_rep(adata, use_rep: str = "corrected_latent") -> str:
-    """Prefer corrected_latent → X_scgen → latent (matches scGen tutorial + this repo)."""
-    if use_rep in adata.obsm:
-        return use_rep
-    if use_rep == "corrected_latent" and "X_scgen" in adata.obsm:
-        return "X_scgen"
-    if "latent" in adata.obsm:
-        return "latent"
-    raise KeyError(f"No embedding {use_rep}; have {list(adata.obsm)}")
-
-
-def run_umap(corrected, *, use_rep: str = "corrected_latent"):
-    """Neighbors/UMAP on scGen low-dim space (GPU via rapids-singlecell)."""
+def run_umap_dpt(corrected, *, n_dcs: int = 15):
     import rapids_singlecell as rsc
+    import scanpy as sc
 
-    use_rep = resolve_scgen_rep(corrected, use_rep)
+    use_rep = _latent_key(corrected)
     _init_gpu()
     rsc.get.anndata_to_GPU(corrected)
     rsc.pp.neighbors(corrected, n_neighbors=15, use_rep=use_rep)
     rsc.tl.umap(corrected)
-    rsc.get.anndata_to_CPU(corrected)
-    corrected.uns["umap_use_rep"] = use_rep
-    return corrected
-
-
-def run_pseudotime(corrected, *, use_rep: str = "corrected_latent", n_dcs: int = 15):
-    """GPU neighbors/diffmap on scGen latent, then scanpy DPT rooted in HSPC.
-
-    Writes ``obs['dpt_pseudotime']``. Reuses existing neighbors if ``use_rep`` matches.
-    """
-    import numpy as np
-    import rapids_singlecell as rsc
-    import scanpy as sc
-
-    use_rep = resolve_scgen_rep(corrected, use_rep)
-    _init_gpu()
-    rsc.get.anndata_to_GPU(corrected)
-    need_neighbors = (
-        "neighbors" not in corrected.uns
-        or corrected.uns.get("umap_use_rep") != use_rep
-    )
-    if need_neighbors:
-        rsc.pp.neighbors(corrected, n_neighbors=15, use_rep=use_rep)
-        rsc.tl.umap(corrected)
-        corrected.uns["umap_use_rep"] = use_rep
     rsc.tl.diffmap(corrected, n_comps=n_dcs)
     rsc.get.anndata_to_CPU(corrected)
+    corrected.uns["umap_use_rep"] = use_rep
 
-    # Root = HSPC cell with highest Procr (fallback: first HSPC)
     hspc = corrected.obs["lineage"].astype(str) == "HSPC"
     if not bool(hspc.any()):
         raise RuntimeError("No HSPC cells to root DPT")
@@ -396,406 +241,405 @@ def run_pseudotime(corrected, *, use_rep: str = "corrected_latent", n_dcs: int =
         x = corrected[:, "Procr"].X
         if hasattr(x, "toarray"):
             x = x.toarray()
-        scores = np.asarray(x).ravel()
-        scores = np.where(hspc.to_numpy(), scores, -np.inf)
+        scores = np.where(hspc.to_numpy(), np.asarray(x).ravel(), -np.inf)
         root_ix = int(np.argmax(scores))
     else:
         root_ix = int(np.flatnonzero(hspc.to_numpy())[0])
     corrected.uns["iroot"] = root_ix
     sc.tl.dpt(corrected, n_dcs=min(10, n_dcs - 1))
-    corrected.uns["dpt"] = {
-        "root_index": root_ix,
-        "root_lineage": "HSPC",
-        "use_rep": use_rep,
-        "n_dcs": n_dcs,
-    }
-    print(
-        f"DPT rooted at cell {root_ix} "
-        f"(lineage={corrected.obs['lineage'].iloc[root_ix]}, rep={use_rep})"
-    )
     return corrected
 
 
-def plot_integration_umaps(corrected, out_png: Path = UMAP_PNG, elias_png: Path = ELIAS_UMAP_PNG):
-    import matplotlib.pyplot as plt
+def ensure_display_type(adata: AnnData) -> None:
+    """Leiden on scGen latent → HSC/agedHSC/MPP/GMP; else lineage map."""
     import scanpy as sc
 
-    # Cohort overview (include calendar age_bin)
-    sc.pl.umap(
-        corrected,
-        color=["technical_batch", "dataset", "lineage", "age_group", "age_bin"],
-        ncols=3,
-        wspace=0.45,
-        show=False,
-    )
-    fig = plt.gcf()
-    fig.set_size_inches(12, 10)
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    # Elias GSM check: highlight the four expected libraries
-    obs = corrected.obs.copy()
-    is_elias = obs["technical_batch"].astype(str) == ELIAS_BATCH
-    gsm = obs["gsm"].astype(str)
-    obs["elias_gsm"] = "other"
-    for g in ELIAS_GSMS:
-        obs.loc[is_elias & (gsm == g), "elias_gsm"] = g
-    corrected.obs["elias_gsm"] = obs["elias_gsm"].astype(str)
-    sc.pl.umap(
-        corrected,
-        color=["elias_gsm", "age_group", "rep"],
-        ncols=3,
-        wspace=0.4,
-        show=False,
-        title=["Elias GSM7869307–910", "age_group", "rep"],
-    )
-    fig2 = plt.gcf()
-    fig2.set_size_inches(14, 4.5)
-    fig2.savefig(elias_png, dpi=150, bbox_inches="tight")
-    plt.close(fig2)
-    print(f"UMAP → {out_png} (use_rep={corrected.uns.get('umap_use_rep')})")
-    print(f"Elias GSM check → {elias_png}")
-    return out_png, elias_png
-
-
-def plot_age_bin_umap(corrected, out_png: Path = AGE_BIN_UMAP_PNG) -> Path:
-    """UMAP focused on calendar age_bin (+ lineage / genotype context)."""
-    import matplotlib.pyplot as plt
-    import scanpy as sc
-
-    colors = ["age_bin", "lineage", "age_group"]
-    if "genotype" in corrected.obs:
-        colors.append("genotype")
-    sc.pl.umap(corrected, color=colors, ncols=2, wspace=0.4, show=False)
-    fig = plt.gcf()
-    fig.set_size_inches(10, 8)
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"age_bin UMAP → {out_png}")
-    return out_png
-
-
-def plot_marker_streams(corrected, out_png: Path = MARKER_STREAM_PNG) -> Path:
-    """Branch streams colored by age_bin + axis marker genes (custom plotting)."""
-    import matplotlib.pyplot as plt
-    import plotting as pl
-
-    if "dpt_pseudotime" not in corrected.obs:
-        raise KeyError("dpt_pseudotime missing; call run_pseudotime first")
-    genes = [g for g in AXIS_MARKERS if g in corrected.var_names]
-    fig = pl.plot_marker_branch_streams(
-        corrected,
-        genes=genes,
-        pt_key="dpt_pseudotime",
-        branch_key="lineage",
-        context_color="age_bin",
-    )
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"marker streams → {out_png} (genes={genes})")
-    return out_png
-
-
-def run_young_old_transfer(joint_hvg, *, celltype: str = "HSPC", max_epochs: int = 100):
-    """Second scGen: batch_key=age_condition for young→old prediction on HSPC."""
-    import scgen
-    import torch
-
-    train = joint_hvg[
-        (joint_hvg.obs["age_condition"].isin(["young", "old"]))
-        & (joint_hvg.obs["genotype"].astype(str) == "WT")
-    ].copy()
-    scgen.SCGEN.setup_anndata(
-        train,
-        batch_key="age_condition",
-        labels_key="cell_type",
-    )
-    model = scgen.SCGEN(train, n_latent=30)
-    n_gpu = torch.cuda.device_count()
-    model.train(
-        max_epochs=max_epochs,
-        batch_size=128,
-        early_stopping=True,
-        early_stopping_patience=25,
-        accelerator="gpu" if n_gpu else "cpu",
-        devices=1,
-    )
-    model.save(JOINT_OUT / "scgen_young_old", overwrite=True)
-    pred, delta = model.predict(
-        ctrl_key="young",
-        stim_key="old",
-        celltype_to_predict=celltype,
-    )
-    pred.obs["age_condition"] = "pred_old"
-    pred.obs["age_group"] = "pred_old"
-    pred.obs["lineage"] = celltype
-    pred.obs["cell_type"] = celltype
-    pred.obs["technical_batch"] = "scGen_young_to_old"
-    pred.obs["dataset"] = "scGen_transfer"
-    print(
-        f"young→old transfer ({celltype}): pred={pred.n_obs:,} cells, "
-        f"delta_l2={float((delta ** 2).sum() ** 0.5):.3f}"
-    )
-    return pred, delta, model
-
-
-def su_holdout_age_summary(*, joint_genes: set[str] | None = None) -> dict:
-    """Su2024 adult/juvenile holdout — shared genes only, no atlas retrain.
-
-    Su stays out of the primary scGen UMAP. Use it only for ages the 10x core
-    lacks (adult, juvenile). Do **not** stack scANVI/scArches on scGen latents.
-    """
-    import scanpy as sc
-
-    entries = {e["dataset"]: e for e in load_manifest()}
-    if "su2024" not in entries:
-        raise FileNotFoundError("su2024 missing from preprocess_manifest.json")
-    su = sc.read_h5ad(entries["su2024"]["path"])
-    su = _harmonize_obs(su, "su2024")
-    keep = su.obs["lineage"].astype(str).isin(AXIS_LINEAGES)
-    su = su[keep].copy()
-
-    if joint_genes is None and JOINT_H5AD.exists():
-        ref = sc.read_h5ad(JOINT_H5AD, backed="r")
-        joint_genes = set(map(str, ref.var_names))
-    elif joint_genes is None:
-        # fall back: intersection of non-Su QC sets
-        genes = None
-        for e in load_manifest():
-            if e["dataset"] == "su2024":
-                continue
-            g = set(map(str, sc.read_h5ad(e["path"], backed="r").var_names))
-            genes = g if genes is None else genes & g
-        joint_genes = genes or set()
-
-    su_genes = set(map(str, su.var_names))
-    shared = sorted(su_genes & joint_genes)
-    su_only = su_genes - joint_genes
-    missing = joint_genes - su_genes
-    axis = ["Procr", "Kit", "Flt3", "Cd34", "Ly6a", "Hlf", "Mecom", "Hoxa9", "Mpo", "Elane"]
-
-    # Restrict to shared genes for any downstream score / transfer check
-    su_shared = su[:, shared].copy() if shared else su[:, []].copy()
-
-    age_tab = (
-        su.obs.groupby(["age_group", "age_label", "lineage"], observed=True)
-        .size()
-        .rename("n")
-        .reset_index()
-    )
-    # Unique-age subset the 10x core lacks (juvenile=1mo→young, adult=3mo)
-    n_holdout = {
-        "juvenile_young": int((su.obs["age_label"].astype(str) == "juvenile").sum()),
-        "adult": int((su.obs["age_group"].astype(str) == "adult").sum()),
-        "old_reference_only": int((su.obs["age_group"].astype(str) == "old").sum()),
-    }
-
-    summary = {
-        "role": (
-            "holdout ages only (adult + juvenile); excluded from primary scGen UMAP"
-        ),
-        "n_cells_axis": int(su.n_obs),
-        "n_holdout_ages": n_holdout,
-        "genes": {
-            "su_total": len(su_genes),
-            "joint_ref": len(joint_genes),
-            "shared_with_joint": len(shared),
-            "su_not_in_joint": len(su_only),
-            "joint_missing_in_su": len(missing),
-            "axis_markers_in_su": {m: m in su_genes for m in axis},
-            "axis_markers_in_shared": {m: m in set(shared) for m in axis},
-            "note": (
-                "Su-not-in-joint is dominated by Gm/contig/miRNA/ERCC-like names — "
-                "Smart-seq2 annotation, not unique HSC biology. "
-                "Procr/Kit/Flt3 are missing from Su vs joint."
-            ),
-        },
-        "age_table": age_tab.to_dict(orient="records"),
-        "no_scanvi_on_scgen": True,
-    }
-
-    JOINT_OUT.mkdir(parents=True, exist_ok=True)
-    SU_HOLDOUT_JSON.write_text(json.dumps(summary, indent=2) + "\n")
-    print(
-        f"Su holdout: {su.n_obs:,} axis cells | "
-        f"shared genes with joint={len(shared):,} | "
-        f"juvenile={n_holdout['juvenile_young']}, adult={n_holdout['adult']}, "
-        f"old(ref)={n_holdout['old_reference_only']}"
-    )
-    print(
-        f"  markers in shared: "
-        f"{ {m: summary['genes']['axis_markers_in_shared'][m] for m in axis} }"
-    )
-    print(f"  summary → {SU_HOLDOUT_JSON}")
-    # keep shared-gene object available for density checks without atlas train
-    hold = su_shared[su_shared.obs["age_group"].astype(str).isin(["adult", "young"])].copy()
-    hold_path = JOINT_OUT / "su_holdout_adult_juvenile_sharedgenes.h5ad"
-    hold.write_h5ad(hold_path)
-    print(f"  holdout h5ad (adult+juvenile, shared genes) → {hold_path} ({hold.n_obs:,}×{hold.n_vars:,})")
-    return summary
-
-
-def run_headless(
-    *,
-    max_epochs: int = 100,
-    skip_transfer: bool = False,
-    gene_join: str = "inner",
-    include_su: bool = False,
-) -> Path:
-    import scanpy as sc
-
-    warnings.filterwarnings("ignore", category=FutureWarning)
-    sc.settings.verbosity = 1
-    exclude = () if include_su else ("su2024",)
-    print(
-        f"Loading age-core axis (HSPC + Myeloid_prog), "
-        f"gene_join={gene_join}, exclude={exclude}…"
-    )
-    joint = load_age_core_axis(gene_join=gene_join, exclude_datasets=exclude)
-    elias_counts = assert_elias_gsms(joint)
-    print("scGen batch_removal (technical_batch)…")
-    corrected, _, hvg = run_scgen_batch_removal(joint, max_epochs=max_epochs)
-    corrected = run_umap(corrected, use_rep="corrected_latent")
-    plot_integration_umaps(corrected)
-    print("DPT pseudotime (GPU neighbors/diffmap → scanpy dpt)…")
-    corrected = run_pseudotime(corrected, use_rep="corrected_latent")
-    plot_age_bin_umap(corrected)
-    plot_marker_streams(corrected)
-    corrected.uns["elias_gsm_counts"] = elias_counts
-    corrected.uns["gene_join"] = gene_join
-    corrected.uns["exclude_datasets"] = list(exclude)
-    corrected.write_h5ad(JOINT_H5AD)
-    print(f"wrote {JOINT_H5AD} ({corrected.n_obs:,} × {corrected.n_vars:,})")
-
-    if not skip_transfer:
-        print("scGen young↔old transfer (HSPC)…")
-        pred, _delta, _m = run_young_old_transfer(
-            hvg, celltype="HSPC", max_epochs=max_epochs
+    if "display_type" in adata.obs:
+        return
+    if "leiden_named" in adata.obs:
+        adata.obs["display_type"] = (
+            adata.obs["leiden_named"].astype(str).str.split("_").str[-1]
         )
-        pred.write_h5ad(TRANSFER_H5AD)
-        print(f"wrote {TRANSFER_H5AD}")
-    return JOINT_H5AD
+        return
 
-
-def run_pseudotime_on_saved(*, h5ad: Path = JOINT_H5AD) -> Path:
-    """Add DPT + age_bin/marker plots to an existing scGen joint without retraining."""
-    import scanpy as sc
-
-    if not h5ad.exists():
-        raise FileNotFoundError(f"Missing {h5ad}; run explore.py first")
-    print(f"Loading {h5ad}…")
-    corrected = sc.read_h5ad(h5ad)
-    if "age_bin" not in corrected.obs and "age_months" in corrected.obs:
-        corrected.obs["age_bin"] = corrected.obs["age_months"].map(
-            _age_bin_from_months
-        ).astype(str)
-    corrected = run_pseudotime(corrected, use_rep="corrected_latent")
-    plot_age_bin_umap(corrected)
-    plot_marker_streams(corrected)
-    corrected.write_h5ad(h5ad)
-    print(f"updated {h5ad} with dpt_pseudotime")
-    return h5ad
-
-
-def run_path_gnn_on_saved(
-    *,
-    h5ad: Path = JOINT_H5AD,
-    out_dir: Path = JOINT_OUT,
-    max_cells: int | None = 20000,
-    n_bins: int = 20,
-    gnn_epochs: int = 80,
-) -> dict:
-    """Shallow tree-GNN path persistence on an existing scGen joint."""
-    import scanpy as sc
-
-    # plotting pulls torch; keep import local like other plot helpers in this file
-    from plotting import run_path_gnn_pipeline
-
-    if not h5ad.exists():
-        raise FileNotFoundError(f"Missing {h5ad}; run explore.py first")
-    print(f"Loading {h5ad} for path-GNN…")
-    adata = sc.read_h5ad(h5ad)
-    written = run_path_gnn_pipeline(
+    key = _latent_key(adata)
+    if "neighbors" not in adata.uns:
+        sc.pp.neighbors(adata, n_neighbors=15, use_rep=key)
+    sc.tl.leiden(
         adata,
-        out_dir,
-        n_bins=n_bins,
-        max_cells=max_cells,
-        gnn_epochs=gnn_epochs,
+        resolution=1.0,
+        key_added="leiden_fine",
+        random_state=0,
+        flavor="igraph",
+        n_iterations=2,
     )
-    for k, p in written.items():
-        print(f"  {k} → {p}")
+    score_cols = []
+    for name, genes in FINE_MARKERS.items():
+        present = [g for g in genes if g in adata.var_names]
+        if not present:
+            continue
+        col = f"fine_{name}"
+        sc.tl.score_genes(adata, present, score_name=col, use_raw=False)
+        score_cols.append(col)
+    if not score_cols:
+        adata.obs["display_type"] = (
+            adata.obs["lineage"]
+            .astype(str)
+            .map({"HSPC": "HSC", "Myeloid_prog": "GMP"})
+            .fillna("MPP")
+        )
+        return
+    names = {}
+    for cl in adata.obs["leiden_fine"].astype(str).unique():
+        m = adata.obs["leiden_fine"].astype(str) == cl
+        means = {
+            c.replace("fine_", ""): float(adata.obs.loc[m, c].mean()) for c in score_cols
+        }
+        names[cl] = max(means, key=means.get)
+    adata.obs["display_type"] = adata.obs["leiden_fine"].astype(str).map(names)
+
+
+def _umap_xy(adata: AnnData) -> np.ndarray:
+    if "X_umap" not in adata.obsm:
+        raise KeyError("Missing X_umap — run --train first")
+    return np.asarray(adata.obsm["X_umap"])[:, :2]
+
+
+def _row_stochastic(conn) -> sparse.csr_matrix:
+    conn = conn.tocsr()
+    rs = np.asarray(conn.sum(axis=1)).ravel()
+    rs[rs == 0] = 1.0
+    return sparse.diags(1.0 / rs) @ conn
+
+
+def select_fate_terminals(
+    adata: AnnData, *, gmp_dpt_q: float = GMP_DPT_Q
+) -> tuple[np.ndarray, np.ndarray]:
+    """Absorbing masks: late-DPT GMP vs all agedHSC."""
+    ensure_display_type(adata)
+    if "dpt_pseudotime" not in adata.obs:
+        raise KeyError("Missing dpt_pseudotime — run --train first")
+    dt = adata.obs["display_type"].astype(str)
+    dpt = pd.to_numeric(adata.obs["dpt_pseudotime"], errors="coerce").to_numpy()
+    gmp = (dt == "GMP").to_numpy()
+    if not gmp.any():
+        raise RuntimeError("No GMP cells for fate terminal A")
+    thr = float(np.nanquantile(dpt[gmp], gmp_dpt_q))
+    term_gmp = gmp & np.isfinite(dpt) & (dpt >= thr)
+    term_aged = (dt == "agedHSC").to_numpy()
+    if not term_gmp.any():
+        raise RuntimeError("Empty late-GMP terminal — lower gmp_dpt_q")
+    if not term_aged.any():
+        raise RuntimeError("No agedHSC cells for fate terminal B")
+    both = term_gmp & term_aged
+    if both.any():
+        term_gmp = term_gmp & ~both
+        term_aged = term_aged & ~both
+    return term_gmp, term_aged
+
+
+def compute_fate_probs(
+    adata: AnnData,
+    *,
+    gmp_dpt_q: float = GMP_DPT_Q,
+    max_iter: int = 400,
+    tol: float = 1e-5,
+) -> AnnData:
+    """Neighbor absorption → obs[fate_GMP], obs[fate_agedHSC]."""
+    if "connectivities" not in adata.obsp:
+        raise KeyError("Missing neighbors connectivities — run --train first")
+    term_gmp, term_aged = select_fate_terminals(adata, gmp_dpt_q=gmp_dpt_q)
+    T = _row_stochastic(adata.obsp["connectivities"])
+
+    def _absorb(hit: np.ndarray, miss: np.ndarray) -> np.ndarray:
+        p = np.zeros(adata.n_obs, dtype=np.float64)
+        p[hit] = 1.0
+        p[miss] = 0.0
+        for _ in range(max_iter):
+            p_new = T @ p
+            p_new[hit] = 1.0
+            p_new[miss] = 0.0
+            if float(np.max(np.abs(p_new - p))) < tol:
+                return p_new
+            p = p_new
+        return p
+
+    p_gmp = _absorb(term_gmp, term_aged)
+    p_aged = _absorb(term_aged, term_gmp)
+    s = p_gmp + p_aged
+    s[s == 0] = 1.0
+    adata.obs[FATE_GMP] = p_gmp / s
+    adata.obs[FATE_AGED] = p_aged / s
+    adata.obs["terminal_GMP"] = term_gmp
+    adata.obs["terminal_agedHSC"] = term_aged
+    adata.uns["fate_terminals"] = {
+        "gmp_dpt_q": gmp_dpt_q,
+        "n_terminal_GMP": int(term_gmp.sum()),
+        "n_terminal_agedHSC": int(term_aged.sum()),
+    }
+    print(
+        f"  terminals: GMP={int(term_gmp.sum())} agedHSC={int(term_aged.sum())} "
+        f"(dpt_q={gmp_dpt_q})"
+    )
+    return adata
+
+
+def _grid_flow(xy: np.ndarray, T, *, n_grid: int = 18):
+    disp = np.asarray(T @ xy) - xy
+    xmin, ymin = xy.min(axis=0)
+    xmax, ymax = xy.max(axis=0)
+    dx = (xmax - xmin) / max(n_grid, 1)
+    dy = (ymax - ymin) / max(n_grid, 1)
+    gx, gy, gu, gv = [], [], [], []
+    for x0 in np.linspace(xmin, xmax, n_grid):
+        for y0 in np.linspace(ymin, ymax, n_grid):
+            m = (
+                (xy[:, 0] >= x0 - dx / 2)
+                & (xy[:, 0] < x0 + dx / 2)
+                & (xy[:, 1] >= y0 - dy / 2)
+                & (xy[:, 1] < y0 + dy / 2)
+            )
+            if int(m.sum()) < 5:
+                continue
+            d = disp[m].mean(axis=0)
+            if float(np.linalg.norm(d)) < 1e-6:
+                continue
+            gx.append(x0)
+            gy.append(y0)
+            gu.append(d[0])
+            gv.append(d[1])
+    return np.asarray(gx), np.asarray(gy), np.asarray(gu), np.asarray(gv)
+
+
+def plot_fate_umap(adata: AnnData, out_dir: Path = JOINT_OUT) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_display_type(adata)
+    if FATE_GMP not in adata.obs:
+        compute_fate_probs(adata)
+    xy = _umap_xy(adata)
+    fate = pd.to_numeric(adata.obs[FATE_GMP], errors="coerce").to_numpy()
+    lab = adata.obs["display_type"].astype(str).to_numpy()
+    T = _row_stochastic(adata.obsp["connectivities"])
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    sc0 = axes[0].scatter(
+        xy[:, 0], xy[:, 1], c=fate, s=2, alpha=0.7, cmap="RdBu_r", vmin=0, vmax=1, rasterized=True
+    )
+    plt.colorbar(sc0, ax=axes[0], fraction=0.046, pad=0.04, label="P(GMP sink)")
+    axes[0].set_title("Fate: GMP vs agedHSC")
+    axes[0].set_xticks([])
+    axes[0].set_yticks([])
+
+    for t in TYPE_ORDER:
+        m = lab == t
+        if not m.any():
+            continue
+        axes[1].scatter(
+            xy[m, 0], xy[m, 1], s=2, alpha=0.65, c=TYPE_COLOR.get(t, "#555"), label=t, rasterized=True
+        )
+        axes[1].annotate(
+            t,
+            (float(xy[m, 0].mean()), float(xy[m, 1].mean())),
+            fontsize=8,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color=TYPE_COLOR.get(t, "#222"),
+            bbox={
+                "boxstyle": "round,pad=0.2",
+                "facecolor": "white",
+                "alpha": 0.75,
+                "edgecolor": TYPE_COLOR.get(t, "#222"),
+            },
+        )
+    gx, gy, gu, gv = _grid_flow(xy, T)
+    if len(gx):
+        axes[1].quiver(
+            gx, gy, gu, gv, color="k", alpha=0.55, width=0.003, angles="xy", scale_units="xy"
+        )
+    axes[1].legend(markerscale=3, frameon=False, fontsize=8, loc="best")
+    axes[1].set_title("Types + flow")
+    axes[1].set_xticks([])
+    axes[1].set_yticks([])
+    fig.suptitle("Competing fates: GMP-committed vs agedHSC-persistent", y=1.02)
+    fig.tight_layout()
+    path = out_dir / "panels_age_bin_fate.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  → {path}")
+    return path
+
+
+def gene_fate_correlations(adata: AnnData) -> pd.DataFrame:
+    """Pearson corr with P(GMP); corr_agedHSC = −corr_GMP for binary fates."""
+    if FATE_GMP not in adata.obs:
+        compute_fate_probs(adata)
+    X = adata.X
+    if sparse.issparse(X):
+        X = X.toarray()
+    X = np.asarray(X, dtype=np.float64)
+    n = X.shape[0]
+    mean_expr = X.mean(axis=0)
+    Xc = X - mean_expr
+    Xc /= Xc.std(axis=0) + 1e-8
+    f = pd.to_numeric(adata.obs[FATE_GMP], errors="coerce").to_numpy(dtype=np.float64)
+    f = (f - f.mean()) / (f.std() + 1e-8)
+    corr_gmp = (Xc.T @ f) / n
+    return pd.DataFrame(
+        {
+            "gene": adata.var_names.astype(str),
+            "corr_GMP": corr_gmp,
+            "corr_agedHSC": -corr_gmp,
+            "mean_expr": mean_expr,
+        }
+    )
+
+
+def plot_driver_corr(corr: pd.DataFrame, out_dir: Path = JOINT_OUT) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    sc0 = ax.scatter(
+        corr["corr_GMP"],
+        corr["mean_expr"],
+        c=corr["corr_GMP"],
+        s=10,
+        alpha=0.65,
+        cmap="RdBu_r",
+        vmin=-1,
+        vmax=1,
+        rasterized=True,
+    )
+    plt.colorbar(sc0, ax=ax, fraction=0.046, pad=0.04, label="corr P(GMP)")
+    ends = pd.concat([corr.nlargest(15, "corr_GMP"), corr.nsmallest(15, "corr_GMP")])
+    for _, r in ends.drop_duplicates("gene").iterrows():
+        ax.annotate(r["gene"], (r["corr_GMP"], r["mean_expr"]), fontsize=6, alpha=0.9)
+    ax.axvline(0, color="#888", lw=0.6)
+    ax.set_xlabel("corr with P(GMP-committed)  [left ← agedHSC | GMP → right]")
+    ax.set_ylabel("mean expression")
+    ax.set_title("Driver genes: GMP vs agedHSC fate")
+    fig.tight_layout()
+    path = out_dir / "drivers_fate_corr.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    csv = out_dir / "drivers_fate_corr.csv"
+    corr.sort_values("corr_GMP", ascending=False).to_csv(csv, index=False)
+    print(f"  → {path}")
+    print(f"  → {csv}")
+    return path
+
+
+def run_ending_gsea(corr: pd.DataFrame, out_dir: Path = JOINT_OUT) -> Path | None:
+    import gseapy as gp
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rnk = (
+        corr[["gene", "corr_GMP"]]
+        .rename(columns={"corr_GMP": "score"})
+        .dropna()
+        .sort_values("score", ascending=False)
+    )
+    rnk.to_csv(out_dir / "fate_prerank.rnk", sep="\t", index=False, header=False)
+    try:
+        res = gp.prerank(
+            rnk=rnk,
+            gene_sets="GO_Biological_Process_2023",
+            organism="Mouse",
+            outdir=str(out_dir / "gsea_fate"),
+            min_size=10,
+            max_size=500,
+            permutation_num=200,
+            seed=0,
+            verbose=False,
+        )
+    except Exception as e:
+        print(f"  GSEA skipped: {e}")
+        return None
+    table = res.res2d if hasattr(res, "res2d") else None
+    if table is None or len(table) == 0:
+        print("  GSEA: no enriched terms")
+        return None
+    out = out_dir / "gsea_fate_ending.csv"
+    table.to_csv(out, index=False)
+    print(f"  → {out} ({len(table)} terms)")
+    return out
+
+
+def run_fate_package(*, h5ad: Path | None = None) -> list[Path]:
+    import scanpy as sc
+
+    path = h5ad or (LABELED_H5AD if LABELED_H5AD.exists() else JOINT_H5AD)
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {path}; run: python explore.py --train")
+    print(f"Loading {path}…")
+    adata = sc.read_h5ad(path)
+    print("Fate absorption (GMP vs agedHSC)…")
+    compute_fate_probs(adata)
+    written: list[Path] = [plot_fate_umap(adata, JOINT_OUT)]
+    print("Driver correlations…")
+    corr = gene_fate_correlations(adata)
+    written.append(plot_driver_corr(corr, JOINT_OUT))
+    print("Ending GSEA…")
+    g = run_ending_gsea(corr, JOINT_OUT)
+    if g is not None:
+        written.append(g)
+    try:
+        adata.write_h5ad(LABELED_H5AD)
+        print(f"  → updated {LABELED_H5AD} with fate columns")
+    except OSError as e:
+        print(f"  (skip h5ad write: {e})")
     return written
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+def train(*, max_epochs: int = 100) -> Path:
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    print("Loading age-core…")
+    joint = load_age_core_axis()
+    print("scGen…")
+    corrected = run_scgen(joint, max_epochs=max_epochs)
+    print("UMAP + DPT…")
+    corrected = run_umap_dpt(corrected)
+    ensure_display_type(corrected)
+    corrected.write_h5ad(JOINT_H5AD)
+    corrected.write_h5ad(LABELED_H5AD)
+    print(f"wrote {JOINT_H5AD}")
+    return JOINT_H5AD
+
+
+def _self_check() -> None:
+    rng = np.random.default_rng(0)
+    n = 300
+    adata = AnnData(
+        X=rng.normal(size=(n, 8)).astype(np.float32),
+        obs=pd.DataFrame(
+            {
+                "lineage": ["HSPC"] * 150 + ["Myeloid_prog"] * 150,
+                "display_type": ["HSC"] * 80 + ["agedHSC"] * 40 + ["MPP"] * 80 + ["GMP"] * 100,
+                "dpt_pseudotime": np.concatenate(
+                    [rng.uniform(0, 0.2, 120), rng.uniform(0.2, 0.5, 80), rng.uniform(0.5, 1.0, 100)]
+                ),
+            }
+        ),
+        var=pd.DataFrame(index=[f"g{i}" for i in range(8)]),
+    )
+    adata.obsm["X_umap"] = rng.normal(size=(n, 2)).astype(np.float32)
+    knn = sparse.random(n, n, density=0.05, random_state=0, format="csr")
+    knn = knn + knn.T
+    knn.setdiag(0)
+    knn.eliminate_zeros()
+    adata.obsp["connectivities"] = knn
+    compute_fate_probs(adata, gmp_dpt_q=0.5, max_iter=50)
+    assert FATE_GMP in adata.obs
+    out = Path("/tmp/explore_fate_check")
+    assert plot_fate_umap(adata, out).exists()
+    assert plot_driver_corr(gene_fate_correlations(adata), out).exists()
+    print("explore._self_check: OK", out)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--max-epochs", type=int, default=100)
-    parser.add_argument(
-        "--skip-transfer",
-        action="store_true",
-        help="Only batch_removal + UMAP (skip young↔old scGen)",
-    )
-    parser.add_argument(
-        "--gene-join",
-        choices=("inner", "outer"),
-        default="inner",
-        help="Gene concat mode (inner=shared genes; outer fills missing with 0)",
-    )
-    parser.add_argument(
-        "--include-su",
-        action="store_true",
-        help="Include Su2024 Smart-seq2 in joint (default: exclude; does not mix with 10x)",
-    )
-    parser.add_argument(
-        "--su-holdout",
-        action="store_true",
-        help=(
-            "Summarize Su2024 adult/juvenile holdout on genes shared with the "
-            "10x joint (no UMAP retrain; no scANVI-on-scGen)"
-        ),
-    )
-    parser.add_argument(
-        "--pseudotime-only",
-        action="store_true",
-        help=(
-            "GPU neighbors/diffmap + DPT on existing age_core_scgen.h5ad; "
-            "write age_bin UMAP + marker branch streams (no scGen retrain)"
-        ),
-    )
-    parser.add_argument(
-        "--path-gnn",
-        action="store_true",
-        help=(
-            "Shallow tree-GNN on HSPC→Myeloid_prog skeleton; path persistence, "
-            "step task scores, GSEA under results/joint_hsc_aging/"
-        ),
-    )
-    parser.add_argument(
-        "--max-cells",
-        type=int,
-        default=20000,
-        help="Subsample for --path-gnn (0 = all cells)",
-    )
-    args = parser.parse_args()
-    if args.su_holdout:
-        su_holdout_age_summary()
-    elif args.pseudotime_only:
-        run_pseudotime_on_saved()
-    elif args.path_gnn:
-        n = None if args.max_cells == 0 else args.max_cells
-        run_path_gnn_on_saved(max_cells=n)
-    else:
-        run_headless(
-            max_epochs=args.max_epochs,
-            skip_transfer=args.skip_transfer,
-            gene_join=args.gene_join,
-            include_su=args.include_su,
-        )
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--train", action="store_true", help="Rebuild scGen + UMAP/DPT first")
+    p.add_argument("--max-epochs", type=int, default=100)
+    args = p.parse_args()
+    if args.train:
+        train(max_epochs=args.max_epochs)
+    run_fate_package()
