@@ -6,7 +6,7 @@ import os
 import sys
 import types
 from concurrent.futures import ThreadPoolExecutor
-from itertools import permutations, product
+from itertools import combinations, product
 from pathlib import Path
 
 os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache_bm")
@@ -15,14 +15,13 @@ import anndata as ad
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy import sparse
-from torch_geometric.data import HeteroData
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import scatter, softmax
+import rapids_singlecell as rsc
 
 BONE = Path("/cis/net/r41/data/iessien1/bone")
 RESULTS = Path("/cis/net/r41/data/iessien1/bone_marrow_results")
@@ -34,14 +33,17 @@ QC = Path(
 )
 
 LINEAGE = "HSPC"
+KEEP_GENOTYPE = ("WT", "Tet2_KO")
+KEEP_TREATMENT = ("vehicle", "IL1b")
 GENOTYPES = ("WT", "Tet2")
 TREATMENTS = ("vehicle", "IL1")
 ARMS = tuple(f"{g}_{t}" for g in GENOTYPES for t in TREATMENTS)
+LEVELS = ("task", "subsystem", "system")
 EPOCHS = 20
 HIDDEN = 96
 STEPS = 10
 BATCH_SIZE = 256
-N_PERM = 10000
+N_PERM = 10_000
 
 AXIS_TASKS: dict[str, list[str]] = {
     "glycolysis": [
@@ -59,6 +61,8 @@ AXIS_TASKS: dict[str, list[str]] = {
     ],
 }
 HYPOTHESIS_TASKS = tuple(t for ts in AXIS_TASKS.values() for t in ts)
+
+_CUDA: list[torch.device] | None = None
 
 
 def _sccellfie_root():
@@ -110,20 +114,27 @@ def _ensure_counts(adata: ad.AnnData):
     if "counts" in adata.layers:
         adata.X = adata.layers["counts"].copy()
     if "n_counts" not in adata.obs:
-        X = adata.X
-        adata.obs["n_counts"] = (
-            np.asarray(X.sum(axis=1)).ravel() if sparse.issparse(X) else X.sum(axis=1)
-        )
+        adata.obs["n_counts"] = np.asarray(adata.X.sum(axis=1)).ravel()
     return adata
 
 
+def _positive_genes(tbg: pd.DataFrame, task: str) -> list[str]:
+    row = tbg.loc[task]
+    return [str(g) for g in row[row > 0].index]
+
+
 def _run_sccellfie(adata: ad.AnnData):
-    sc.pp.normalize_total(adata, target_sum=1e4)
-    sc.pp.log1p(adata)
-    sc.pp.highly_variable_genes(adata, n_top_genes=2000, subset=False)
-    sc.pp.pca(adata, n_comps=30)
-    sc.pp.neighbors(adata, n_neighbors=15, n_pcs=30)
+    adata = adata.copy()
+    if hasattr(adata, "X") and hasattr(adata.X, "to"):
+        adata.X = adata.X.to("cuda")
+    rsc.pp.normalize_total(adata, target_sum=1e4)
+    rsc.pp.log1p(adata)
+    rsc.pp.highly_variable_genes(adata, n_top_genes=2000, subset=False)
+    rsc.pp.pca(adata, n_comps=30)
+    rsc.pp.neighbors(adata, n_neighbors=15, n_pcs=30)
     adata = _ensure_counts(adata)
+    if hasattr(adata, "X") and hasattr(adata.X, "to"):
+        adata.X = adata.X.to("cpu")
     db = _import_sccellfie_pipeline()(
         adata,
         organism="mouse",
@@ -152,18 +163,12 @@ def _remap_obs(s: pd.Series, mapping: dict[str, str], label: str):
 def _stamp_arms(adata: ad.AnnData):
     adata.obs["genotype"] = _remap_obs(
         adata.obs["genotype"],
-        {"WT": "WT", "Tet2_KO": "Tet2", "Tet2_het": "Tet2", "Tet2": "Tet2"},
+        {"WT": "WT", "Tet2_KO": "Tet2"},
         "genotype",
     )
     adata.obs["treatment"] = _remap_obs(
         adata.obs["treatment"],
-        {
-            "vehicle": "vehicle",
-            "PBS": "vehicle",
-            "IL1b": "IL1",
-            "IL1a": "IL1",
-            "IL1": "IL1",
-        },
+        {"vehicle": "vehicle", "IL1b": "IL1"},
         "treatment",
     )
     adata.obs["arm"] = (
@@ -177,12 +182,24 @@ def _stamp_arms(adata: ad.AnnData):
     return adata
 
 
+def _fix_sample_names(adata: ad.AnnData):
+    sn = (
+        adata.obs["sample_name"].astype(str)
+        if "sample_name" in adata.obs
+        else adata.obs_names.astype(str)
+    )
+    adata.obs["sample_name"] = np.where(
+        sn.isin(["nan", "None", ""]), adata.obs_names.astype(str), sn
+    )
+    return adata
+
+
 def load_cells():
     raw = ad.read_h5ad(QC)
     m = (
         raw.obs["lineage"].astype(str).eq(LINEAGE)
-        & raw.obs["genotype"].isin(["WT", "Tet2_KO"])
-        & raw.obs["treatment"].astype(str).isin(["vehicle", "IL1b"])
+        & raw.obs["genotype"].isin(KEEP_GENOTYPE)
+        & raw.obs["treatment"].astype(str).isin(KEEP_TREATMENT)
     )
     adata = _ensure_counts(raw[m].copy())
     print(
@@ -192,16 +209,10 @@ def load_cells():
         flush=True,
     )
     adata = _run_sccellfie(adata)
-    adata.layers["gene_scores"] = _to_dense(
-        adata.layers["gene_scores"] if "gene_scores" in adata.layers else adata.X
-    ).astype(np.float32)
+    scores = adata.layers["gene_scores"] if "gene_scores" in adata.layers else adata.X
+    adata.layers["gene_scores"] = _to_dense(scores).astype(np.float32)
     adata = _stamp_arms(adata)
-    if "sample_name" not in adata.obs.columns:
-        adata.obs["sample_name"] = adata.obs_names.astype(str)
-    sn = adata.obs["sample_name"].astype(str)
-    adata.obs["sample_name"] = sn.where(
-        ~sn.isin(["nan", "None", ""]), adata.obs_names.astype(str)
-    )
+    adata = _fix_sample_names(adata)
     print(
         f"cells n={adata.n_obs} mice={adata.obs['sample_name'].nunique()} "
         f"arms={adata.obs['arm'].value_counts().to_dict()}",
@@ -221,6 +232,16 @@ def _adj_edges(A: np.ndarray):
     return edge_index, edge_weight
 
 
+def _parent_adj(children: list[str], parent_of: dict[str, str]):
+    parents = sorted({parent_of.get(c, "UNKNOWN") for c in children})
+    p_idx = {p: i for i, p in enumerate(parents)}
+    A = np.zeros((len(parents), len(children)), dtype=np.float32)
+    for i, c in enumerate(children):
+        A[p_idx[parent_of.get(c, "UNKNOWN")], i] = 1.0
+    ei, ew = _adj_edges(_rownorm(A))
+    return parents, ei, ew
+
+
 def _repeat_edges(edge_index: torch.Tensor, n_src: int, n_dst: int, batch: int):
     src, dst = edge_index
     e = src.numel()
@@ -236,14 +257,12 @@ def build_hypothesis_graph(gene_names: list[str], tbg: pd.DataFrame):
     task_to_sub = dict(zip(info["Task"], info["Subsystem"].astype(str)))
     sub_to_sys = dict(zip(info["Subsystem"].astype(str), info["System"].astype(str)))
     g_idx = {g: i for i, g in enumerate(gene_names)}
-    tasks = [t for t in HYPOTHESIS_TASKS if t in tbg.index]
     edges: list[tuple[int, int]] = []
     kept: list[str] = []
-    for t in tasks:
-        row = tbg.loc[t]
-        pairs = [
-            (len(kept), g_idx[str(g)]) for g in row[row > 0].index if str(g) in g_idx
-        ]
+    for t in HYPOTHESIS_TASKS:
+        if t not in tbg.index:
+            continue
+        pairs = [(len(kept), g_idx[g]) for g in _positive_genes(tbg, t) if g in g_idx]
         if not pairs:
             continue
         edges.extend(pairs)
@@ -254,30 +273,9 @@ def build_hypothesis_graph(gene_names: list[str], tbg: pd.DataFrame):
     A_tg = np.zeros((len(kept), n_g), dtype=np.float32)
     for ti, gi in edges:
         A_tg[ti, gi] = 1.0
-    subs = sorted({task_to_sub.get(t, "UNKNOWN") for t in kept})
-    s_idx = {s: i for i, s in enumerate(subs)}
-    A_st = np.zeros((len(subs), len(kept)), dtype=np.float32)
-    for ti, t in enumerate(kept):
-        A_st[s_idx[task_to_sub.get(t, "UNKNOWN")], ti] = 1.0
-    systems = sorted({sub_to_sys.get(s, "UNKNOWN") for s in subs})
-    y_idx = {y: i for i, y in enumerate(systems)}
-    A_ys = np.zeros((len(systems), len(subs)), dtype=np.float32)
-    for s in subs:
-        A_ys[y_idx[sub_to_sys.get(s, "UNKNOWN")], s_idx[s]] = 1.0
     gene_task, gene_task_w = _adj_edges(_rownorm(A_tg))
-    task_sub, task_sub_w = _adj_edges(_rownorm(A_st))
-    sub_sys, sub_sys_w = _adj_edges(_rownorm(A_ys))
-    hetero = HeteroData()
-    hetero["gene"].num_nodes = n_g
-    hetero["task"].num_nodes = len(kept)
-    hetero["subsystem"].num_nodes = len(subs)
-    hetero["system"].num_nodes = len(systems)
-    hetero["gene", "to", "task"].edge_index = gene_task
-    hetero["gene", "to", "task"].edge_weight = gene_task_w
-    hetero["task", "to", "subsystem"].edge_index = task_sub
-    hetero["task", "to", "subsystem"].edge_weight = task_sub_w
-    hetero["subsystem", "to", "system"].edge_index = sub_sys
-    hetero["subsystem", "to", "system"].edge_weight = sub_sys_w
+    subs, task_sub, task_sub_w = _parent_adj(kept, task_to_sub)
+    systems, sub_sys, sub_sys_w = _parent_adj(subs, sub_to_sys)
     print(
         f"VNN graph: genes={n_g} tasks={len(kept)} "
         f"subs={len(subs)} systems={len(systems)} edges={int(gene_task.size(1))}",
@@ -288,7 +286,12 @@ def build_hypothesis_graph(gene_names: list[str], tbg: pd.DataFrame):
         "subsystems": subs,
         "systems": systems,
         "n_genes": n_g,
-        "hetero": hetero,
+        "gene_task": gene_task,
+        "gene_task_w": gene_task_w,
+        "task_sub": task_sub,
+        "task_sub_w": task_sub_w,
+        "sub_sys": sub_sys,
+        "sub_sys_w": sub_sys_w,
     }
 
 
@@ -346,41 +349,34 @@ class MetabolicVNN(nn.Module):
     def __init__(self, graph: dict, hidden: int = HIDDEN, steps: int = STEPS):
         super().__init__()
         self.steps = steps
-        h = graph["hetero"]
-        self.register_buffer("gene_task", h["gene", "to", "task"].edge_index.long())
-        prior = h["gene", "to", "task"].edge_weight.float().clamp_min(1e-6)
+        gt = graph["gene_task"].long()
+        ts = graph["task_sub"].long()
+        sy = graph["sub_sys"].long()
+        self.register_buffer("gene_task", gt)
+        self.register_buffer("task_gene", gt.flip(0).contiguous())
+        self.register_buffer("task_sub", ts)
+        self.register_buffer("sub_task", ts.flip(0).contiguous())
+        self.register_buffer("sub_sys", sy)
+        self.register_buffer("sys_sub", sy.flip(0).contiguous())
+        prior = graph["gene_task_w"].float().clamp_min(1e-6)
         self.tg_logit = nn.Parameter(torch.log(prior))
-        self.register_buffer("task_sub", h["task", "to", "subsystem"].edge_index.long())
-        self.register_buffer(
-            "task_sub_w", h["task", "to", "subsystem"].edge_weight.float()
-        )
-        self.register_buffer(
-            "sub_sys", h["subsystem", "to", "system"].edge_index.long()
-        )
-        self.register_buffer(
-            "sub_sys_w", h["subsystem", "to", "system"].edge_weight.float()
-        )
-        n_t = len(graph["tasks"])
-        n_s = len(graph["subsystems"])
-        n_y = len(graph["systems"])
-        n_g = int(graph["n_genes"])
-        self.n_g = n_g
-        self.n_t = n_t
-        self.n_s = n_s
-        self.n_y = n_y
+        self.register_buffer("task_sub_w", graph["task_sub_w"].float())
+        self.register_buffer("sub_sys_w", graph["sub_sys_w"].float())
+        self.n_g = int(graph["n_genes"])
+        self.n_t = len(graph["tasks"])
+        self.n_s = len(graph["subsystems"])
+        self.n_y = len(graph["systems"])
         self.gene_in = nn.Linear(1, hidden)
-        self.gene_log_scale = nn.Parameter(torch.zeros(n_g))
-        self.task_init = nn.Parameter(torch.zeros(1, n_t, hidden))
-        self.sub_init = nn.Parameter(torch.zeros(1, n_s, hidden))
-        self.sys_init = nn.Parameter(torch.zeros(1, n_y, hidden))
+        self.gene_log_scale = nn.Parameter(torch.zeros(self.n_g))
+        self.task_init = nn.Parameter(torch.zeros(1, self.n_t, hidden))
+        self.sub_init = nn.Parameter(torch.zeros(1, self.n_s, hidden))
+        self.sys_init = nn.Parameter(torch.zeros(1, self.n_y, hidden))
         self.upd_g = nn.GRUCell(hidden, hidden)
         self.upd_t = nn.GRUCell(hidden, hidden)
         self.upd_s = nn.GRUCell(hidden, hidden)
         self.upd_y = nn.GRUCell(hidden, hidden)
-        self.attn_t = nn.Linear(hidden, 1)
-        self.attn_s = nn.Linear(hidden, 1)
-        self.attn_y = nn.Linear(hidden, 1)
-        self.recon = nn.Linear(3 * hidden, n_g)
+        self.attn = nn.ModuleDict({lv: nn.Linear(hidden, 1) for lv in LEVELS})
+        self.recon = nn.Linear(3 * hidden, self.n_g)
         self.gated = GatedPriorConv()
         self.rev = WeightedConv(scale=0.5)
         self.back = WeightedConv(scale=1.0)
@@ -399,43 +395,43 @@ class MetabolicVNN(nn.Module):
         h_s = self.sub_init.expand(B, -1, -1).contiguous()
         h_y = self.sys_init.expand(B, -1, -1).contiguous()
         tg_w = self.edge_weights()
-        gt, tg = self.gene_task, self.gene_task.flip(0)
-        ts, st = self.task_sub, self.task_sub.flip(0)
-        sy, ys = self.sub_sys, self.sub_sys.flip(0)
         for _ in range(self.steps):
-            h_t = _gru(self.upd_t, self.gated(h_g, h_t, gt, tg_w), h_t)
-            h_s = _gru(self.upd_s, self.gated(h_t, h_s, ts, self.task_sub_w), h_s)
-            h_y = _gru(self.upd_y, self.gated(h_s, h_y, sy, self.sub_sys_w), h_y)
-            h_s = h_s + self.rev(h_y, self.n_s, ys, self.sub_sys_w)
-            h_t = h_t + self.rev(h_s, self.n_t, st, self.task_sub_w)
-            h_g = _gru(self.upd_g, self.back(h_t, self.n_g, tg, tg_w), h_g)
-        a_t = torch.softmax(self.attn_t(h_t).squeeze(-1), dim=-1)
-        a_s = torch.softmax(self.attn_s(h_s).squeeze(-1), dim=-1)
-        a_y = torch.softmax(self.attn_y(h_y).squeeze(-1), dim=-1)
+            h_t = _gru(self.upd_t, self.gated(h_g, h_t, self.gene_task, tg_w), h_t)
+            h_s = _gru(
+                self.upd_s, self.gated(h_t, h_s, self.task_sub, self.task_sub_w), h_s
+            )
+            h_y = _gru(
+                self.upd_y, self.gated(h_s, h_y, self.sub_sys, self.sub_sys_w), h_y
+            )
+            h_s = h_s + self.rev(h_y, self.n_s, self.sys_sub, self.sub_sys_w)
+            h_t = h_t + self.rev(h_s, self.n_t, self.sub_task, self.task_sub_w)
+            h_g = _gru(self.upd_g, self.back(h_t, self.n_g, self.task_gene, tg_w), h_g)
+        hs = {"task": h_t, "subsystem": h_s, "system": h_y}
+        attn = {
+            lv: torch.softmax(self.attn[lv](hs[lv]).squeeze(-1), dim=-1)
+            for lv in LEVELS
+        }
         pooled = torch.cat(
-            [
-                torch.einsum("bt,bth->bh", a_t, h_t),
-                torch.einsum("bs,bsh->bh", a_s, h_s),
-                torch.einsum("by,byh->bh", a_y, h_y),
-            ],
+            [torch.einsum("bn,bnh->bh", attn[lv], hs[lv]) for lv in LEVELS],
             dim=-1,
         )
-        return pooled, {"task": a_t, "subsystem": a_s, "system": a_y}, h_t
+        return pooled, attn, h_t
 
     def forward(self, x_genes: torch.Tensor):
         pooled, attn, h_t = self.encode(x_genes)
         return self.recon(pooled), attn, h_t
 
 
-def _fit_epochs(model, Xt, tr, epochs, device):
+def _fit_epochs(model, Xt, device):
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-3)
-    bs = min(BATCH_SIZE, len(tr))
-    for _ in range(epochs):
+    n = Xt.size(0)
+    bs = min(BATCH_SIZE, n)
+    for _ in range(EPOCHS):
         model.train()
-        perm = np.random.permutation(tr)
-        for i in range(0, len(perm), bs):
-            idx = perm[i : i + bs]
-            xb = Xt[idx].to(device, non_blocking=True)
+        perm = np.random.permutation(n)
+        for i in range(0, n, bs):
+            idx = torch.as_tensor(perm[i : i + bs], device=device)
+            xb = Xt.index_select(0, idx)
             opt.zero_grad(set_to_none=True)
             xhat, _, _ = model(xb)
             F.mse_loss(xhat, xb).backward()
@@ -443,60 +439,63 @@ def _fit_epochs(model, Xt, tr, epochs, device):
 
 
 def _train_recon(graph, X, device, tag: str):
-    n = X.shape[0]
-    Xt = torch.from_numpy(np.ascontiguousarray(X)).pin_memory()
-    print(f"[{tag}] recon cells={n} epochs={EPOCHS} batch={BATCH_SIZE}", flush=True)
+    print(
+        f"[{tag}] recon cells={X.shape[0]} epochs={EPOCHS} batch={BATCH_SIZE}",
+        flush=True,
+    )
+    Xt = torch.from_numpy(np.ascontiguousarray(X)).to(device)
     model = MetabolicVNN(graph).to(device)
-    _fit_epochs(model, Xt, np.arange(n, dtype=np.int64), EPOCHS, device)
-    return model
+    _fit_epochs(model, Xt, device)
+    return model, Xt
 
 
-def _encode_cells(model, X, device):
+def _encode_cells(model, Xt):
     model.eval()
     hs = []
-    at = {k: [] for k in ("task", "subsystem", "system")}
+    at = {k: [] for k in LEVELS}
     with torch.no_grad():
-        for i in range(0, X.shape[0], BATCH_SIZE):
-            xb = torch.from_numpy(np.ascontiguousarray(X[i : i + BATCH_SIZE])).to(
-                device, non_blocking=True
-            )
-            _, attn, h_t = model(xb)
+        for i in range(0, Xt.size(0), BATCH_SIZE):
+            _, attn, h_t = model.encode(Xt[i : i + BATCH_SIZE])
             hs.append(h_t.mean(-1))
-            for k in at:
-                at[k].append(attn[k].cpu())
+            for k in LEVELS:
+                at[k].append(attn[k])
     states = torch.cat(hs, dim=0)
-    attn = {k: torch.cat(v, dim=0).numpy() for k, v in at.items()}
+    attn = {k: torch.cat(v, dim=0).cpu().numpy() for k, v in at.items()}
     return states, attn
+
+
+def _interaction_2x2(wv, wi, tv, ti):
+    return (ti - wi) - (tv - wv)
 
 
 def _interaction(mean_a: dict[str, np.ndarray]):
     missing = [a for a in ARMS if a not in mean_a]
     if missing:
         raise SystemExit(f"missing arm attention {missing}")
-    return (mean_a[ARMS[3]] - mean_a[ARMS[1]]) - (mean_a[ARMS[2]] - mean_a[ARMS[0]])
+    return _interaction_2x2(*(mean_a[a] for a in ARMS))
 
 
 def _mouse_treatment_combos(g_mouse: np.ndarray, t_mouse: np.ndarray):
+    g_mouse = np.asarray(g_mouse)
+    t_mouse = np.asarray(t_mouse)
     groups = []
     for gi in np.unique(g_mouse):
         idx = np.where(g_mouse == gi)[0]
-        uniq = sorted(set(permutations(t_mouse[idx].tolist())))
-        groups.append((idx, uniq))
-    for choice in product(*(u for _, u in groups)):
-        t_p = t_mouse.copy()
-        for (idx, _), perm in zip(groups, choice):
-            t_p[list(idx)] = perm
+        n_il1 = int((t_mouse[idx] == 1).sum())
+        groups.append((idx, n_il1))
+    for picked in product(*(combinations(idx, n_il1) for idx, n_il1 in groups)):
+        t_p = np.zeros_like(t_mouse)
+        for il1_idx in picked:
+            t_p[list(il1_idx)] = 1
         yield t_p
 
 
 def _codes(values, levels):
-    s = np.asarray(values).astype(str)
-    out = np.full(len(s), -1, dtype=np.int64)
-    for i, lv in enumerate(levels):
-        out[s == lv] = i
-    bad = out < 0
-    if np.any(bad):
-        raise SystemExit(f"unmapped {np.unique(s[bad]).tolist()}")
+    c = pd.Categorical(np.asarray(values).astype(str), categories=list(levels))
+    out = c.codes.astype(np.int64)
+    if (out < 0).any():
+        bad = np.asarray(values).astype(str)[out < 0]
+        raise SystemExit(f"unmapped {np.unique(bad).tolist()}")
     return out
 
 
@@ -513,8 +512,7 @@ def _tuple_chunk(y, arm, n, seed, device):
             raise SystemExit(f"missing arm {ARMS[a]}")
         sel = loc[torch.randint(0, loc.numel(), (n,), generator=gen, device=device)]
         picked.append(y.index_select(0, sel))
-    wv, wi, tv, ti = picked
-    return (ti - wi) - (tv - wv)
+    return _interaction_2x2(*picked)
 
 
 def _tuple_gpu(y, arm, n, seed, devices):
@@ -522,7 +520,11 @@ def _tuple_gpu(y, arm, n, seed, devices):
         n // len(devices) + (1 if i < n % len(devices) else 0)
         for i in range(len(devices))
     ]
-    jobs = [(sz, seed + 10007 * i, dev) for i, (sz, dev) in enumerate(zip(sizes, devices)) if sz]
+    jobs = [
+        (sz, seed + 10007 * i, dev)
+        for i, (sz, dev) in enumerate(zip(sizes, devices))
+        if sz
+    ]
     if len(jobs) == 1:
         sz, sd, dev = jobs[0]
         return _tuple_chunk(y, arm, sz, sd, dev)
@@ -552,37 +554,36 @@ def _perm_matrix(y, genotype, treatment, mouse, n_perm: int = N_PERM, seed: int 
     g_m[inv] = g
     t_m[inv] = t
     arm = 2 * g + t
-    n_arm = [(arm == a).sum().item() for a in range(len(ARMS))]
+    n_arm = torch.bincount(arm, minlength=len(ARMS)).tolist()
     if min(n_arm) == 0:
         raise SystemExit(f"missing arm {ARMS[n_arm.index(0)]}")
-    means = torch.stack([y[arm == a].mean(0) for a in range(len(ARMS))])
-    wv, wi, tv, ti = means
-    tet2 = tv - wv
-    il1 = wi - wv
-    inter = (ti - wi) - (tv - wv)
+    means = scatter(y, arm, dim=0, dim_size=len(ARMS), reduce="mean")
+    inter = _interaction_2x2(*means)
+    tet2 = means[2] - means[0]
+    il1 = means[1] - means[0]
     tuples = _tuple_gpu(y, arm, n_perm, seed, devices)
     g_m_np = g_m.detach().cpu().numpy()
     t_m_np = t_m.detach().cpu().numpy()
-    combos = [t_p for t_p in _mouse_treatment_combos(g_m_np, t_m_np) if not np.array_equal(t_p, t_m_np)]
+    combos = list(_mouse_treatment_combos(g_m_np, t_m_np))
     if len(combos) > n_perm:
         rng = np.random.default_rng(seed)
         rng.shuffle(combos)
         combos = combos[:n_perm]
-    n_null = len(combos)
-    if n_null:
-        T = torch.as_tensor(np.stack(combos), device=device, dtype=torch.int64)
-        arm_p = 2 * g.unsqueeze(0) + T[:, inv]
-        null_means = []
-        for a in range(len(ARMS)):
-            m = arm_p == a
-            den = m.sum(1).clamp_min(1).to(y.dtype).unsqueeze(1)
-            null_means.append(m.to(y.dtype) @ y / den)
-        nw, ni, ntv, nti = torch.stack(null_means)
-        geq = (((nti - ni) - (ntv - nw)).abs() >= inter.abs()).sum(0)
-        p = (1.0 + geq.to(y.dtype)) / (n_null + 1)
-    else:
-        p = torch.full_like(inter, float("nan"))
-    print(f"perm gpus={len(devices)} tuples={int(tuples.size(0))} combos={n_null + 1}", flush=True)
+    n_combos = len(combos)
+    T = torch.as_tensor(np.stack(combos), device=device, dtype=torch.int64)
+    arm_p = 2 * g.unsqueeze(0) + T[:, inv]
+    combo_means = []
+    for a in range(len(ARMS)):
+        m = arm_p == a
+        den = m.sum(1).clamp_min(1).to(y.dtype).unsqueeze(1)
+        combo_means.append(m.to(y.dtype) @ y / den)
+    combo_inter = _interaction_2x2(*torch.stack(combo_means))
+    geq = (combo_inter.abs() >= inter.abs()).sum(0)
+    p = geq.to(y.dtype) / n_combos
+    print(
+        f"perm gpus={len(devices)} tuples={int(tuples.size(0))} combos={n_combos}",
+        flush=True,
+    )
     return {
         "tet2": tet2,
         "il1": il1,
@@ -594,17 +595,78 @@ def _perm_matrix(y, genotype, treatment, mouse, n_perm: int = N_PERM, seed: int 
         "p_interaction_perm": p,
         "n_cells": int(y.size(0)),
         "n_mice": n_mice,
-        "n_combos": int(n_null + 1),
+        "n_combos": int(n_combos),
         "n_tuples": int(tuples.size(0)),
         "n_arm": n_arm,
         "means": means,
+        "combo_inter": combo_inter,
     }, tuples
 
 
+def _plot_combo_hist(combo: pd.DataFrame, axes: pd.DataFrame):
+    names = [n.replace("axis:", "") for n in axes["task"]]
+    n = len(names)
+    fig, axs = plt.subplots(n, 1, figsize=(6.2, 0.95 * n + 0.85), sharex=True)
+    if n == 1:
+        axs = [axs]
+    obs = dict(zip(axes["task"], axes["interaction"].to_numpy(dtype=float)))
+    rows = []
+    for name in names:
+        key = f"axis:{name}"
+        vals = combo.loc[combo["task"] == key, "interaction"].to_numpy(dtype=float)
+        ux, cnt = np.unique(np.round(vals, 12), return_counts=True)
+        rows.append((name, key, vals, ux, cnt))
+    all_x = np.concatenate([r[2] for r in rows]) if rows else np.array([0.0])
+    xmin = float(min(np.nanmin(all_x), 0.0))
+    xmax = float(max(np.nanmax(all_x), 0.0))
+    if xmin == xmax:
+        xmin, xmax = xmin - 1.0, xmax + 1.0
+    stack_top = max((int(c.max()) if c.size else 1) for *_, c in rows)
+    for i, (ax, (name, key, vals, ux, cnt)) in enumerate(zip(axs, rows)):
+        xs, ys = [], []
+        for x, c in zip(ux, cnt):
+            for h in range(int(c)):
+                xs.append(float(x))
+                ys.append(h)
+        ax.scatter(xs, ys, marker="|", s=36, c="0.2", linewidths=0.7, zorder=3)
+        ax.axvline(0.0, color="0.75", lw=0.6, zorder=1)
+        ax.plot(
+            [obs[key], obs[key]],
+            [0.0, 1.25],
+            color="#c44e52",
+            lw=1.4,
+            solid_capstyle="butt",
+            zorder=4,
+        )
+        k = int(np.sum(np.abs(vals) >= np.abs(obs[key]) - 1e-12))
+        ax.set_ylabel(
+            f"{name}\np={k}/{len(vals)}",
+            rotation=0,
+            ha="right",
+            va="center",
+        )
+        ax.set_yticks([])
+        ax.set_ylim(-0.45, max(stack_top, 2) + 0.35)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.spines["bottom"].set_visible(i == n - 1)
+        if i == n - 1:
+            ax.spines["bottom"].set_bounds(xmin, xmax)
+            ticks = [xmin, xmax]
+            if xmin < 0.0 < xmax:
+                ticks = [xmin, 0.0, xmax]
+            ax.set_xticks(ticks)
+    axs[-1].set_xlim(xmin, xmax)
+    axs[-1].set_xlabel("Tet2 × IL-1")
+    fig.tight_layout()
+    fig.savefig(OUT / "vnn_axis_summary.png", bbox_inches="tight", dpi=200)
+    plt.close(fig)
+
+
 def perm_task_contrasts(states, names: list[str], adata: ad.AnnData, tag: str):
-    device = _cuda_devices()[0]
-    Y = states if torch.is_tensor(states) else torch.as_tensor(states, device=device)
-    Y = Y.to(device=device, dtype=torch.float64)
+    Y = states if torch.is_tensor(states) else torch.as_tensor(states)
+    Y = Y.to(dtype=torch.float64)
     col_names = list(names)
     for ax, ts in AXIS_TASKS.items():
         idx = [i for i, n in enumerate(names) if n in ts]
@@ -613,20 +675,25 @@ def perm_task_contrasts(states, names: list[str], adata: ad.AnnData, tag: str):
         Y = torch.cat([Y, Y[:, idx].mean(1, keepdim=True)], dim=1)
         col_names.append(f"axis:{ax}")
     hyp = set(HYPOTHESIS_TASKS)
+    is_axis = [n.startswith("axis:") for n in col_names]
     obs, tuples = _perm_matrix(
         Y,
         adata.obs["genotype"].to_numpy(),
         adata.obs["treatment"].to_numpy(),
         adata.obs["sample_name"].astype(str).to_numpy(),
     )
-    tuples_np = tuples.detach().cpu().numpy()
+    axis_idx = [j for j, flag in enumerate(is_axis) if flag]
+    tuples_np = (
+        tuples[:, axis_idx].detach().cpu().numpy() if axis_idx else np.empty((0, 0))
+    )
+    combo_np = obs["combo_inter"].detach().cpu().numpy()
     means = obs["means"].detach().cpu().numpy()
     rows = []
     combo_parts = []
     for j, name in enumerate(col_names):
         row = {
             "task": name,
-            "on_axis": name in hyp or name.startswith("axis:"),
+            "on_axis": name in hyp or is_axis[j],
             "tet2": float(obs["tet2"][j]),
             "il1": float(obs["il1"][j]),
             "interaction": float(obs["interaction"][j]),
@@ -643,20 +710,41 @@ def perm_task_contrasts(states, names: list[str], adata: ad.AnnData, tag: str):
             **{f"n_{a}": obs["n_arm"][i] for i, a in enumerate(ARMS)},
         }
         rows.append(row)
-        if name.startswith("axis:"):
-            combo_parts.append(pd.DataFrame({"task": name, "interaction": tuples_np[:, j]}))
+        if is_axis[j]:
+            combo_parts.append(
+                pd.DataFrame(
+                    {"task": name, "interaction": tuples_np[:, axis_idx.index(j)]}
+                )
+            )
     tab = pd.DataFrame(rows)
     tab.to_csv(OUT / f"vnn_task_state_2x2_{tag}.csv", index=False)
-    axes = tab[tab["task"].str.startswith("axis:")].copy()
+    axes = tab.loc[is_axis]
     axes.to_csv(OUT / f"vnn_axis_2x2_{tag}.csv", index=False)
-    pd.concat(combo_parts, ignore_index=True).to_csv(
-        OUT / f"vnn_cell_combo_interaction_{tag}.csv", index=False
-    )
+    if combo_parts:
+        pd.concat(combo_parts, ignore_index=True).to_csv(
+            OUT / f"vnn_cell_combo_interaction_{tag}.csv", index=False
+        )
+    if axis_idx:
+        mouse_combo = pd.concat(
+            [
+                pd.DataFrame(
+                    {
+                        "task": col_names[j],
+                        "combo": np.arange(combo_np.shape[0]),
+                        "interaction": combo_np[:, j],
+                    }
+                )
+                for j in axis_idx
+            ],
+            ignore_index=True,
+        )
+        mouse_combo.to_csv(OUT / f"vnn_mouse_combo_interaction_{tag}.csv", index=False)
+        _plot_combo_hist(mouse_combo, axes)
     print(tab.to_string(index=False), flush=True)
     return tab
 
 
-def write_attention_report(oof_attn: dict, graph: dict, arms, tag: str):
+def write_attention_report(attn: dict, graph: dict, arms, tag: str):
     levels = {
         "task": graph["tasks"],
         "subsystem": graph["subsystems"],
@@ -665,7 +753,7 @@ def write_attention_report(oof_attn: dict, graph: dict, arms, tag: str):
     arms = np.asarray(arms)
     task_tab = None
     for lv, names in levels.items():
-        a = np.asarray(oof_attn[lv], dtype=np.float64)
+        a = np.asarray(attn[lv], dtype=np.float64)
         mean_a = {c: a[arms == c].mean(0) for c in ARMS if (arms == c).any()}
         inter = _interaction(mean_a)
         cols = {"factor": names, "level": lv, "interaction_attn": inter}
@@ -678,13 +766,12 @@ def write_attention_report(oof_attn: dict, graph: dict, arms, tag: str):
         tab.to_csv(OUT / f"vnn_interaction_attention_{tag}{suffix}.csv", index=False)
         if lv == "task":
             task_tab = tab
-    axis_attn = {
-        ax: float(task_tab.loc[task_tab["factor"].isin(ts), "interaction_attn"].sum())
-        for ax, ts in AXIS_TASKS.items()
-    }
     attn_cols = [f"attn_{a}" for a in ARMS]
     mat = task_tab.set_index("factor")[attn_cols]
     mat.columns = list(ARMS)
+    order = [t for ts in AXIS_TASKS.values() for t in ts if t in mat.index]
+    order += [t for t in mat.index if t not in order]
+    mat = mat.loc[order]
     fig, ax = plt.subplots(
         figsize=(max(6.0, 0.9 * mat.shape[1] + 2), max(3.5, 0.35 * mat.shape[0] + 1.2))
     )
@@ -693,18 +780,14 @@ def write_attention_report(oof_attn: dict, graph: dict, arms, tag: str):
     ax.set_xticklabels(list(mat.columns), rotation=25, ha="right")
     ax.set_yticks(np.arange(mat.shape[0]))
     ax.set_yticklabels(list(mat.index))
-    ax.set_title("Cell task attention")
+    ax.set_title("task attention (interpretability)")
     fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="attention")
     fig.tight_layout()
-    png = OUT / f"vnn_attention_heatmap_{tag}.png"
+    png = OUT / "vnn_attention_heatmap.png"
     fig.savefig(png, bbox_inches="tight", dpi=200)
     plt.close(fig)
-    mat.reset_index().to_csv(OUT / f"vnn_attention_heatmap_{tag}.csv", index=False)
-    return {
-        "png": str(png),
-        "axis_interaction_attention_sum": axis_attn,
-        "top_interaction_factors": task_tab.head(10).to_dict(orient="records"),
-    }
+    mat.reset_index().to_csv(OUT / "vnn_attention_heatmap.csv", index=False)
+    return {"png": str(png)}
 
 
 def write_edge_weights(model, graph, gene_names: list[str], tag: str):
@@ -723,45 +806,64 @@ def write_edge_weights(model, graph, gene_names: list[str], tag: str):
 
 
 def _cuda_devices():
+    global _CUDA
+    if _CUDA is not None:
+        return _CUDA
     n = torch.cuda.device_count() if torch.cuda.is_available() else 0
     if n < 1:
         raise SystemExit("CUDA required for metabolic VNN training and permutation.")
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    return [torch.device(f"cuda:{i}") for i in range(n)]
+    _CUDA = [torch.device(f"cuda:{i}") for i in range(n)]
+    return _CUDA
 
 
-def _cuda_device():
-    return _cuda_devices()[0]
-
-
-def train_vnn(adata: ad.AnnData, tbg: pd.DataFrame, tag: str = "tet2_il1"):
-    OUT.mkdir(parents=True, exist_ok=True)
-    X = _to_dense(adata.layers["gene_scores"]).astype(np.float32)
-    hyp_genes = []
-    for t in HYPOTHESIS_TASKS:
-        if t not in tbg.index:
-            continue
-        row = tbg.loc[t]
-        hyp_genes.extend(str(g) for g in row[row > 0].index)
-    keep = [g for g in adata.var_names.astype(str) if g in set(hyp_genes)]
-    if len(keep) < 10:
-        raise SystemExit(f"only {len(keep)} hypothesis-task genes")
-    names = list(adata.var_names.astype(str))
-    X = X[:, [names.index(g) for g in keep]]
-    mu = X.mean(0, keepdims=True)
-    sd = X.std(0, keepdims=True) + 1e-6
-    X = (X - mu) / sd
-    graph = build_hypothesis_graph(keep, tbg)
-    device = _cuda_device()
-    model = _train_recon(graph, X, device, tag=tag)
-    states, attn = _encode_cells(model, X, device)
+def _downstream(
+    model, Xt, adata: ad.AnnData, graph: dict, gene_names: list[str], tag: str
+):
+    model.eval()
+    states, attn = _encode_cells(model, Xt)
+    pd.DataFrame(
+        states.detach().cpu().numpy(),
+        columns=graph["tasks"],
+        index=np.asarray(adata.obs_names.astype(str)),
+    ).to_csv(OUT / f"vnn_cell_task_states_{tag}.csv")
     contrasts = perm_task_contrasts(states, graph["tasks"], adata, tag)
     attn_rep = write_attention_report(
         attn, graph, adata.obs["arm"].astype(str).to_numpy(), tag
     )
-    edges = write_edge_weights(model, graph, keep, tag)
+    edges = write_edge_weights(model, graph, gene_names, tag)
+    return {
+        "n_cells": int(adata.n_obs),
+        "n_mice": int(adata.obs["sample_name"].nunique()),
+        "gene_task_weights": edges,
+        "task_contrasts": contrasts.to_dict(orient="records"),
+        "attention_heatmap": attn_rep["png"],
+    }
+
+
+def train_vnn(adata: ad.AnnData, tbg: pd.DataFrame, tag: str = "tet2_il1"):
+    OUT.mkdir(parents=True, exist_ok=True)
+    hyp = {
+        g for t in HYPOTHESIS_TASKS if t in tbg.index for g in _positive_genes(tbg, t)
+    }
+    names = list(adata.var_names.astype(str))
+    keep = [g for g in names if g in hyp]
+    if len(keep) < 10:
+        raise SystemExit(f"only {len(keep)} hypothesis-task genes")
+    idx = {g: i for i, g in enumerate(names)}
+    cols = [idx[g] for g in keep]
+    G = adata.layers["gene_scores"]
+    X = (G[:, cols].toarray() if sparse.issparse(G) else np.asarray(G)[:, cols]).astype(
+        np.float32
+    )
+    mu = X.mean(0, keepdims=True)
+    sd = X.std(0, keepdims=True) + 1e-6
+    X = (X - mu) / sd
+    graph = build_hypothesis_graph(keep, tbg)
+    device = _cuda_devices()[0]
+    model, Xt = _train_recon(graph, X, device, tag=tag)
     torch.save(
         {
             "tag": tag,
@@ -774,13 +876,7 @@ def train_vnn(adata: ad.AnnData, tbg: pd.DataFrame, tag: str = "tet2_il1"):
         },
         OUT / f"vnn_best_{tag}.pt",
     )
-    return {
-        "n_cells": int(adata.n_obs),
-        "n_mice": int(adata.obs["sample_name"].nunique()),
-        "gene_task_weights": edges,
-        "task_contrasts": contrasts.to_dict(orient="records"),
-        **attn_rep,
-    }
+    return _downstream(model, Xt, adata, graph, keep, tag)
 
 
 def _self_check(tbg: pd.DataFrame):
@@ -788,35 +884,52 @@ def _self_check(tbg: pd.DataFrame):
     for t in HYPOTHESIS_TASKS:
         if t not in tbg.index:
             continue
-        row = tbg.loc[t]
-        genes.extend(str(g) for g in row[row > 0].index if str(g) not in genes)
+        genes.extend(g for g in _positive_genes(tbg, t) if g not in genes)
         if len(genes) >= 8:
             break
     genes = genes[:8]
-    graph = build_hypothesis_graph(genes, tbg)
-    device = _cuda_device()
     X = np.random.default_rng(0).standard_normal((8, len(genes))).astype(np.float32)
-    model = _train_recon(graph, X, device, tag="self_check")
-    states, attn = _encode_cells(model, X, device)
+    cells = ad.AnnData(
+        X=X,
+        obs=pd.DataFrame(
+            {
+                "genotype": ["WT"] * 4 + ["Tet2_KO"] * 4,
+                "treatment": ["vehicle", "vehicle", "IL1b", "IL1b"] * 2,
+                "sample_name": list("abcdefgh"),
+                "lineage": [LINEAGE] * 8,
+            },
+            index=[f"c{i}" for i in range(8)],
+        ),
+    )
+    cells.var_names = genes
+    cells.layers["gene_scores"] = X
+    cells = _stamp_arms(_fix_sample_names(cells))
+    graph = build_hypothesis_graph(genes, tbg)
+    assert "hetero" not in graph
+    device = _cuda_devices()[0]
+    model, Xt = _train_recon(graph, X, device, tag="self_check")
+    states, attn = _encode_cells(model, Xt)
     n_t = len(graph["tasks"])
     assert states.shape == (8, n_t)
     assert attn["task"].shape == (8, n_t)
-    g = np.array(["WT"] * 4 + ["Tet2"] * 4)
-    t = np.array(["vehicle", "vehicle", "IL1", "IL1"] * 2)
-    mouse = np.array(list("abcdefgh"))
+    g = cells.obs["genotype"].to_numpy()
+    t = cells.obs["treatment"].to_numpy()
+    mouse = cells.obs["sample_name"].astype(str).to_numpy()
     y = (
         1.0
         + 2.0 * (g == "Tet2")
         + 3.0 * (t == "IL1")
         + 4.0 * ((g == "Tet2") & (t == "IL1"))
     )
-    obs, tuples = _perm_matrix(y, g, t, mouse, n_perm=64)
-    mean_a = {a: obs["means"][i].detach().cpu().numpy() for i, a in enumerate(ARMS)}
+    algebra, _ = _perm_matrix(y, g, t, mouse, n_perm=64)
+    mean_a = {a: algebra["means"][i].detach().cpu().numpy() for i, a in enumerate(ARMS)}
     assert abs(float(_interaction(mean_a)[0]) - 4) < 1e-8
-    assert abs(float(obs["interaction"][0]) - 4) < 1e-8
-    assert abs(float(obs["combo_mean"][0]) - 4) < 1e-8
-    assert abs(float(obs["combo_frac_pos"][0]) - 1.0) < 1e-8
+    assert abs(float(algebra["interaction"][0]) - 4) < 1e-8
+    assert abs(float(algebra["combo_mean"][0]) - 4) < 1e-8
+    obs, tuples = _perm_matrix(states, g, t, mouse, n_perm=64)
     assert int(tuples.size(0)) == 64
+    assert int(obs["n_combos"]) == 36
+    assert tuple(obs["combo_inter"].shape) == (36, n_t)
     print("self-check ok", flush=True)
 
 
