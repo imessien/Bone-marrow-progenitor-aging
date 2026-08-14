@@ -19,6 +19,7 @@ dependencies = [
     "gseapy>=1.1",
     "lightning>=2.0,<3",
     "matplotlib>=3.7",
+    "openpyxl>=3.0",
     "numpy>=1.23,<2.0",
     "nvidia-cuda-nvrtc-cu12>=12.1,<13",
     "nvidia-cuda-runtime-cu12>=12.1,<13",
@@ -44,6 +45,8 @@ dependencies = [
     "doubletdetection>=4.3",
     "leidenalg>=0.10",
     "scgen",
+    "upsetplot>=0.9",
+    "omicverse>=1.6",
 ]
 
 [tool.uv]

@@ -25,20 +25,21 @@ The genotype of a clonal hematopoiesis clone (for example Tet2, Dnmt3a, or Asxl1
 The settled discovery package that pairs a bone-marrow IL-1 × Tet2 study with a Tet2-versus-Dnmt3a brain-engraftment study so export phenotype and CNS infiltration can be read together.
 
 ### CHIP metabolic-graph transfer
-The discovery hero: a graph model with scCellFie metabolic module features that learns age_cohort × genotype × IL-1 classes on a shared gene→task→subsystem→system graph (McClatchy Young + Caiado Old), then transfers to GSE298597 Tet2 versus WT myeloid/Mono_Mac–like cells, with Dnmt3a as a hard negative.
-*Avoid:* calling plain scCellFie heatmaps on McClatchy the result; treating Burns/Niño/Kim as extra training GEOs; novel TET2-selective cytokine discovery (requires wet lab)
+The discovery hero: a small VNN/BiNN on **young McClatchy** GSE209994 marker-`HSPC` only (Tet2 × IL-1β 2×2). Named nodes are glycolysis, OXPHOS/TCA, and PPP scCellFie tasks. The net reconstructs cell gene scores through the graph. Each `sample_name` is a mouse. The 2×2 uses every HSPC: random 4-cell tuples (one per arm) give the interaction distribution; their mean is the cell-arm contrast. P-values permute treatment among mice within genotype (cells in a mouse move together). Confirmatory p-values are the three axis interaction terms.
+*Avoid:* pooling GMP/Mono/Gran with HSPC so a 2×2 can be a lineage-mix shift; treating this as an HSC↔GMP fate/transition analysis
+*Avoid:* age/Kovtonyuk/Caiado as training heads; GO as co-equal nodes; training or scoring a 4-arm classifier at 2 mice/arm; shuffling **cells** as if they were independent 2×2 units; treating Burns/Niño/Kim as extra training GEOs; novel TET2-selective cytokine discovery (requires wet lab)
 
 ### Graph factors
-Metabolic task (and higher) nodes in the deep factor graph — e.g. scCellFie tasks such as glycolysis or N-linked glycosylation — not experimental conditions.
-*Avoid:* calling genotype, age, IL-1β, or Il1r1 “factors” in this graph sense
+Named scCellFie tasks on the hypothesis axes (glycolysis ATP-from-glucose, Krebs + Complex I/II, PPP HMP/ribose-5-P) → subsystem → system. Family: visible / biologically-informed nets (DCell, P-NET). Unrolled gated message passing: Ma2019FGNN, implemented as PyG `MessagePassing` on a `HeteroData` gene/task/subsystem/system graph. Genotype, treatment, and the four arms are **labels**, not graph nodes.
+*Avoid:* calling genotype, age, IL-1β, or Il1r1 “factors” in this graph sense; wiring GO or N-glycosylation in as co-equal nodes; calling this a gene–gene GAT/GCN
 
-### Age context (observed class on shared graph)
-Young = GSE209994 McClatchy (scRNA Tet2×IL-1β). Old = PRJEB56666 Caiado (bulk HSC Tet2×IL-1α, ~6–9 mo adult proxy — not chronological 18–24 mo aging RNA). Both scored onto the same genes/tasks and trained as 8-way `age_cohort × genotype × treatment` classes in `chip_metabolic.py`. Gene→task edge weights and per-gene input scales are learnable (`Task_by_Gene` only defines which edges exist). Optional `--age-prior` initializes/scales those edges by Young vs Old task Cohen's d; `--young-only` ablates Caiado.
-*Avoid:* claiming Caiado RNA is chronological aged marrow; mapping old WT into young `WT_vehicle` / `WT_IL1` labels; treating Il1r1KO/GF as the age bin itself
+### Age context (not in this 2×2)
+Inflammaging enters as **IL-1 treatment** on young McClatchy marrow. Chronological age is motivation, not a factor. Caiado bulk HSC Tet2×IL-1α is not an Old training cohort. Kovtonyuk age×Il1r1 is a separate IL-1 necessity experiment.
+*Avoid:* claiming Caiado RNA is chronological aged marrow; pretrain→finetune or soft age priors on Mitchell/Kovtonyuk; LOO age accuracy as biology
 
 ### Cell-pooled graph training
-The deep factor graph is per-row (gene→task→subsystem→system with gated prior edges). Mixing McClatchy cells and Caiado bulk samples is allowed when features share the same Task_by_Gene graph; study identity is not a graph node. Age is an observed class on that shared graph — pooling alone does not invent aged-Tet2 biology.
-*Avoid:* “samples don’t matter so age is learned automatically”; calling gated prior edges new “age connections” in the structural sense
+The VNN trains on cells. Each McClatchy `sample_name` is a mouse. The 2×2 permutation reassigns treatment among mice within genotype. Edges are scCellFie gene→hypothesis-task priors with input-dependent gates. Study identity is not a graph node.
+*Avoid:* treating cell count as the factorial n; shuffling cell labels independently of mouse; calling gated prior edges new biology connections
 
 ### Bulk metabolic prior
 Public bulk Tet2 RNA-seq used only to check that metabolic gene programs move with genotype outside McClatchy (currently GSE132090). Not a graph-transfer cohort and not “Niño validation” while GSE314014 / MW ST004480–6532 remain private or empty.
@@ -56,5 +57,5 @@ The contribution of marrow-derived myeloid clones to the aged human microglial p
 
 - "'CHIP score' had been used for curated driver gene-set expression on age-core streams — that is not the same as CHIP cargo from mutant GEO genotypes."
 - "'Fate' on the joint UMAP had been read as competing aging biology — when terminals are display types, prefer calling it type-circular absorption."
-- "Caiado PRJEB56666 is adult Tet2×IL-1α bulk HSC used as proxy Old vs McClatchy Young — not 18–24 mo chronological aging RNA."
-- "Coarse-aligning chronological old WT into McClatchy `WT_vehicle` / `WT_IL1` collapses age into cargo labels — prefer explicit `age_cohort` classes on the shared graph."
+- "Caiado PRJEB56666 is adult Tet2×IL-1α bulk HSC — not a chronological Old training cohort for the CHIP 2×2."
+- "Coarse-aligning chronological old WT into McClatchy `WT_vehicle` / `WT_IL1` collapses age into cargo labels — keep the 2×2 on young McClatchy only."
