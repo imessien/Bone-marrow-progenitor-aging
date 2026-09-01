@@ -14,3 +14,15 @@ results/
 docs/*
 !docs/plans/
 !docs/plans/**
+proposal.aux
+proposal.log
+proposal.out
+proposal.toc
+proposal.bbl
+proposal.blg
+proposal.fls
+proposal.fdb_latexmk
+proposal.synctex.gz
+proposal.synctex(busy).pdf
+proposal.synctex(busy).gz
+CONCEPTS.md
