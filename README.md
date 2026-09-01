@@ -26,20 +26,21 @@ Outputs under `results/joint_hsc_aging/`.
 
 ## CHIP metabolic VNN (Tet2 × IL-1)
 
-Single entrypoint: **`factor.py`**. Young McClatchy GSE209994 marker-`HSPC`
-2×2 only (WT/Tet2 × vehicle/IL-1). No GMP/HSC mix, no age head, no Kovtonyuk,
-no GO nodes.
+`factor.py` is the CHIP entrypoint. Young McClatchy GSE209994 marker-HSPC
+only (WT/Tet2 × vehicle/IL-1). No GMP mix, no age head, no extra GEOs in
+the four arm labels.
 
-A small **visible / biologically-informed net** (VNN/BiNN): named scCellFie
-tasks as nodes, gene→task→subsystem→system edges from the mouse DB, gated
-message passing. The net reconstructs **cell** gene scores (no 4-arm classifier).
-Each `sample_name` well is treated as a **mouse**. Every HSPC stays in the
-2×2: the point estimate is the mean of random 4-cell tuples (one cell per
-arm), which equals `(Tet2_IL1 − WT_IL1) − (Tet2_vehicle − WT_vehicle)` on
-cell arm means. `combo_frac_pos` is the fraction of those tuples with a
-positive interaction. P-values reassign treatment among mice within genotype
-(all of a mouse's cells move together). Confirmatory tests are the three
-axis rows; per-task rows are exploratory.
+A VNN reconstructs cell gene scores on named scCellFie tasks
+(gene→task→subsystem→system), then freezes encodings. Each `sample_name`
+is a mouse. `mice.png` is the interaction map: one Normalized 2×2 per
+metabolic task (glycolysis, Complex I/II, TCA NADH, pyruvate, HMP, ribose-5-P).
+The statistic is arm means of those task encodings:
+`(Tet2_IL1 − WT_IL1) − (Tet2_vehicle − WT_vehicle)`. $p = k/36$ under each
+panel. `mice_genes.png` is interpretability for that map: the same 2×2
+effects on frozen gene embeddings, not log counts.
+
+GSE285379 FACS-HSPC TET2 × LPS is the same VNN map in human (`human.png`,
+`human_genes.png`; 4 libraries, 4 combos, CTRL/LPS). Not merged into McClatchy.
 
 Family: DCell, P-NET. Message passing: Ma 2019 FGNN. Knowledge graph: scCellFie.
 
@@ -50,13 +51,12 @@ python factor.py
 ```
 
 Mouse DB: `/cis/net/r41/data/iessien1/bone/sccellfie/mus_musculus`  
+Human DB: `/cis/net/r41/data/iessien1/bone/sccellfie/homo_sapiens`  
 Outputs: `/cis/net/r41/data/iessien1/bone_marrow_results/chip_metabolic_graph/`
 
-- `vnn_axis_2x2_tet2_il1.csv` — confirmatory cell-tuple contrasts
-- `vnn_task_state_2x2_tet2_il1.csv` — per-task contrasts (exploratory)
-- `vnn_cell_combo_interaction_tet2_il1.csv` — sampled 4-cell interaction tuples (axes)
-- `vnn_interaction_attention_tet2_il1.csv` — cell-mean named-task attention
-- `vnn_attention_heatmap_tet2_il1.png` — attention by arm
-- `vnn_gene_task_weights_tet2_il1.csv` — learned gene→task edge weights
+- `mice.png` / `mice.csv` — mouse VNN per-task 2×2 map
+- `mice_genes.png` / `mice_genes.csv` — mouse VNN gene-embedding clouds
+- `human.png` / `human.csv` — human VNN per-task 2×2 map
+- `human_genes.png` / `human_genes.csv` — human VNN gene-embedding clouds
 
 CUDA required. Training uses cells. Permutation unit is the mouse (`sample_name`).

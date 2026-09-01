@@ -25,12 +25,12 @@ The genotype of a clonal hematopoiesis clone (for example Tet2, Dnmt3a, or Asxl1
 The settled discovery package that pairs a bone-marrow IL-1 × Tet2 study with a Tet2-versus-Dnmt3a brain-engraftment study so export phenotype and CNS infiltration can be read together.
 
 ### CHIP metabolic-graph transfer
-The discovery hero: a small VNN/BiNN on **young McClatchy** GSE209994 marker-`HSPC` only (Tet2 × IL-1β 2×2). Named nodes are glycolysis, OXPHOS/TCA, and PPP scCellFie tasks. The net reconstructs cell gene scores through the graph. Each `sample_name` is a mouse. The 2×2 uses every HSPC: random 4-cell tuples (one per arm) give the interaction distribution; their mean is the cell-arm contrast. P-values permute treatment among mice within genotype (cells in a mouse move together). Confirmatory p-values are the three axis interaction terms.
+The discovery hero: a VNN on young McClatchy GSE209994 marker-HSPC only (Tet2 × IL-1β 2×2). Named nodes are glycolysis, OXPHOS/TCA, and PPP scCellFie tasks. The net reconstructs cell gene scores through the graph, then freezes encodings. Each `sample_name` is a mouse. The confirmatory figure is the interaction map: one Normalized 2×2 per metabolic task from those encodings (every HSPC, cells stay with their mouse), not raw scCellFie scores and not an axis mean. Gene embedding clouds are interpretability for that map (IL-1 main × interaction of frozen gene states; Complex I labelled once as Nduf). P-values are the fraction of the 36 within-genotype treatment reassignments of the 8 mice as extreme as observed. GSE285379 FACS-HSPC TET2 × LPS is the same VNN map in human (4 libraries, 4 combos), not extra McClatchy mice.
 *Avoid:* pooling GMP/Mono/Gran with HSPC so a 2×2 can be a lineage-mix shift; treating this as an HSC↔GMP fate/transition analysis
-*Avoid:* age/Kovtonyuk/Caiado as training heads; GO as co-equal nodes; training or scoring a 4-arm classifier at 2 mice/arm; shuffling **cells** as if they were independent 2×2 units; treating Burns/Niño/Kim as extra training GEOs; novel TET2-selective cytokine discovery (requires wet lab)
+*Avoid:* age/Kovtonyuk/Caiado as training heads; GO as co-equal nodes; training or scoring a 4-arm classifier at 2 mice/arm; shuffling **cells** as if they were independent 2×2 units; treating Burns/Niño/Kim or GSE285379 as extra training GEOs or extra McClatchy mice; novel TET2-selective cytokine discovery (requires wet lab)
 
 ### Graph factors
-Named scCellFie tasks on the hypothesis axes (glycolysis ATP-from-glucose, Krebs + Complex I/II, PPP HMP/ribose-5-P) → subsystem → system. Family: visible / biologically-informed nets (DCell, P-NET). Unrolled gated message passing: Ma2019FGNN, implemented as PyG `MessagePassing` on a `HeteroData` gene/task/subsystem/system graph. Genotype, treatment, and the four arms are **labels**, not graph nodes.
+Named scCellFie tasks on the hypothesis axes (glycolysis ATP-from-glucose, Krebs + Complex I/II, PPP HMP/ribose-5-P) → subsystem → system. Family: visible / biologically-informed nets (DCell, P-NET). Unrolled gated message passing: Ma2019FGNN, implemented as PyG `MessagePassing` on gene/task/subsystem/system **edge tensors** (not a `HeteroData` container). Genotype, treatment, and the four arms are **labels**, not graph nodes.
 *Avoid:* calling genotype, age, IL-1β, or Il1r1 “factors” in this graph sense; wiring GO or N-glycosylation in as co-equal nodes; calling this a gene–gene GAT/GCN
 
 ### Age context (not in this 2×2)
@@ -38,7 +38,7 @@ Inflammaging enters as **IL-1 treatment** on young McClatchy marrow. Chronologic
 *Avoid:* claiming Caiado RNA is chronological aged marrow; pretrain→finetune or soft age priors on Mitchell/Kovtonyuk; LOO age accuracy as biology
 
 ### Cell-pooled graph training
-The VNN trains on cells. Each McClatchy `sample_name` is a mouse. The 2×2 permutation reassigns treatment among mice within genotype. Edges are scCellFie gene→hypothesis-task priors with input-dependent gates. Study identity is not a graph node.
+The VNN trains on cells. Encodings are frozen before the 2×2. Each McClatchy `sample_name` is a mouse; cells of one mouse share genotype and treatment and move together when treatment is reassigned within genotype. The confirmatory figure is the per-task 2×2 map of Normalized arm means; $p = k/36$ is the permutation result under each task. Gene embedding clouds interpret that map. Study identity is not a graph node.
 *Avoid:* treating cell count as the factorial n; shuffling cell labels independently of mouse; calling gated prior edges new biology connections
 
 ### Bulk metabolic prior

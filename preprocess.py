@@ -12,6 +12,7 @@ Datasets (counts already deposited — **no Cell Ranger**):
   gse59114    Kowalczyk SMART-seq young/old LT/ST/MPP (**log-norm only** — not scGen)
   gse209994   CHIP pilot: Tet2 WT/KO × vehicle/IL-1β Lin− BM 10x (GSE209994)
   gse298597   CHIP pilot: WT/Tet2/Dnmt3a BM→5xFAD brain 10x h5 (GSE298597)
+  gse285379   Huerga Encabo human TET2×LPS in NBSGW (GSE285379; not McClatchy 2×2)
   gse163503   Kovtonyuk bulk BM HSC DESeq2-normalized Smart-seq2 (GSE163503; age gate)
   prjeb56666  Caiado bulk HSC Smart-seq2 WT/Tet2+/− × PBS/IL-1α (ENA PRJEB56666; cargo check)
 
@@ -26,6 +27,7 @@ Usage:
   python preprocess.py --dataset gse59114 --annotate --force
   python preprocess.py --dataset gse209994 --annotate
   python preprocess.py --dataset gse298597 --annotate
+  python preprocess.py --dataset gse285379 --annotate
   python preprocess.py --dataset gse163503 --annotate --force
   python preprocess.py --dataset prjeb56666 --annotate --force
   python preprocess.py --dataset chip_pilot --annotate
@@ -36,6 +38,7 @@ GSE59114 GEO ships log-scaled expression (no integer counts) — reference only.
 GSE163503 GEO ships DESeq2-normalized bulk HSC counts (no Scrublet; log1p after QC).
 PRJEB56666: kallisto gene counts → median-of-ratios size factors → log1p (bulk; no Scrublet).
 CHIP pilots are optional (not in age_core): GSE209994 MTX; GSE298597 raw 10x h5.
+GSE285379 is human TET2×LPS (STARsolo HSPC MTX + multiome GEX h5); confirmatory only.
 """
 from __future__ import annotations
 
@@ -113,6 +116,11 @@ PATHS = {
         "source": BONE / "GSE298597" / "processed" / "combined_counts.h5ad",
         "out": BONE / "GSE298597" / "processed" / "gse298597_qc_preprocessed.h5ad",
     },
+    "gse285379": {
+        "raw": BONE / "GSE285379" / "raw",
+        "source": BONE / "GSE285379" / "processed" / "combined_counts.h5ad",
+        "out": BONE / "GSE285379" / "processed" / "gse285379_qc_preprocessed.h5ad",
+    },
     "gse163503": {
         "raw": BONE / "GSE163503" / "raw" / "GSE163503_normalized_counts.csv.gz",
         "ensembl_map": BONE / "GSE163503" / "processed" / "ensembl_to_symbol.tsv",
@@ -136,6 +144,8 @@ AGE_CORE_PLATESEQ = ["su2024"]
 OPTIONAL_PLATESEQ = ["gse70657", "gse59114"]
 # Belk/CHIP gate×cargo pilot — not joined into age_core scGen by default.
 CHIP_PILOT_10X = ["gse209994", "gse298597"]
+# Human TET2×LPS confirmatory GEO — not joined into chip_pilot / factor.py 2×2.
+OPTIONAL_HUMAN_CHIP = ["gse285379"]
 # Bulk HSC: Kovtonyuk age×IL1R1 gate prior; Caiado Tet2×IL-1α cargo check.
 # Neither joins scGen / age_core.
 OPTIONAL_BULK = ["gse163503", "prjeb56666"]
@@ -144,6 +154,7 @@ ALL_DATASETS = [
     *AGE_CORE_10X,
     *OPTIONAL_PLATESEQ,
     *CHIP_PILOT_10X,
+    *OPTIONAL_HUMAN_CHIP,
     *OPTIONAL_BULK,
 ]
 
@@ -159,6 +170,21 @@ BM_MARKER_SETS: dict[str, list[str]] = {
     "T_NK": ["Cd3d", "Cd3e", "Cd3g", "Nkg7", "Gzma", "Ncr1"],
     "Stroma_MSC": ["Cxcl12", "Lepr", "Nes", "Pdgfra", "Kitl", "Col1a1"],
     "Endothelial": ["Pecam1", "Cdh5", "Emcn", "Kdr"],
+}
+
+# Humanized-mouse GSE285379 (GRCh38 symbols). HSPC samples are FACS-sorted;
+# immune progeny get marker argmax only.
+HUMAN_BM_MARKER_SETS: dict[str, list[str]] = {
+    "HSPC": ["PROM1", "HLF", "MECOM", "HOXA9", "CD34", "KIT", "FLT3"],
+    "Myeloid_prog": ["ELANE", "MPO", "CTSG", "MS4A3", "CEBPE"],
+    "Granulocyte": ["CAMP", "S100A8", "S100A9", "MPO"],
+    "Mono_Mac": ["CSF1R", "CD68", "ADGRE1", "ITGAM", "CD14", "LYZ"],
+    "Erythroid": ["GATA1", "KLF1", "HBA1", "HBB"],
+    "MegE_prog": ["PF4", "ITGA2B", "GP9", "GATA1"],
+    "B_lymphoid": ["CD79A", "CD19", "MS4A1", "EBF1", "PAX5"],
+    "T_NK": ["CD3D", "CD3E", "CD3G", "NKG7", "GZMA", "NCR1"],
+    "Stroma_MSC": ["CXCL12", "LEPR", "NES", "PDGFRA", "KITLG"],
+    "Endothelial": ["PECAM1", "CDH5", "KDR"],
 }
 
 WHITE_HSPC = {"HSC", "HSC|CMP", "MPP"}
@@ -364,6 +390,61 @@ GSE298597_SAMPLES = {
         "enrichment": "CD45",
         "treatment": "none",
         "rep": "2",
+    },
+}
+
+# Huerga Encabo GSE285379. Immune h5 filenames swap WT/KO vs GEO sample titles;
+# genotype follows series-matrix characteristics, not the filename token.
+GSE285379_SAMPLES = {
+    "GSM8701468_HSPC_TET2_CTRL": {
+        "gsm": "GSM8701468",
+        "compartment": "HSPC",
+        "genotype": "Tet2_KO",
+        "treatment": "CTRL",
+        "kind": "mtx",
+        "assay": "10x_STARsolo",
+    },
+    "GSM8701469_HSPC_WT_CTRL": {
+        "gsm": "GSM8701469",
+        "compartment": "HSPC",
+        "genotype": "WT",
+        "treatment": "CTRL",
+        "kind": "mtx",
+        "assay": "10x_STARsolo",
+    },
+    "GSM8701470_HSPC_TET2_LPS": {
+        "gsm": "GSM8701470",
+        "compartment": "HSPC",
+        "genotype": "Tet2_KO",
+        "treatment": "LPS",
+        "kind": "mtx",
+        "assay": "10x_STARsolo",
+    },
+    "GSM8701471_HSPC_WT_LPS": {
+        "gsm": "GSM8701471",
+        "compartment": "HSPC",
+        "genotype": "WT",
+        "treatment": "LPS",
+        "kind": "mtx",
+        "assay": "10x_STARsolo",
+    },
+    "GSM8701472_Immune_progeny_KO_LPS": {
+        "gsm": "GSM8701472",
+        "compartment": "immune_progeny",
+        "genotype": "WT",
+        "treatment": "LPS",
+        "kind": "h5",
+        "assay": "10x_multiome_gex",
+        "filename_genotype_token": "KO",
+    },
+    "GSM8701473_Immune_progeny_WT_LPS": {
+        "gsm": "GSM8701473",
+        "compartment": "immune_progeny",
+        "genotype": "Tet2_KO",
+        "treatment": "LPS",
+        "kind": "h5",
+        "assay": "10x_multiome_gex",
+        "filename_genotype_token": "WT",
     },
 }
 
@@ -576,6 +657,7 @@ def gpu_qc_preprocess(
     min_cells_gene: int = 10,
     gene_mad: float = 5.0,
     run_scrublet: bool = True,
+    mt_prefix: str = "mt-",
 ) -> ad.AnnData:
     """GPU gene filter, MAD depth+complexity QC within batch, optional Scrublet, log1p.
 
@@ -590,7 +672,7 @@ def gpu_qc_preprocess(
 
     rsc.get.anndata_to_GPU(a)
     rsc.pp.filter_genes(a, min_cells=min_cells_gene)
-    rsc.pp.flag_gene_family(a, gene_family_name="mt", gene_family_prefix="mt-")
+    rsc.pp.flag_gene_family(a, gene_family_name="mt", gene_family_prefix=mt_prefix)
     rsc.pp.calculate_qc_metrics(a, qc_vars=["mt"], log1p=False)
     rsc.get.anndata_to_CPU(a)
 
@@ -656,14 +738,21 @@ def gpu_qc_preprocess(
         "max_mt": max_mt,
         "max_ribo": max_ribo,
         "gene_mad": gene_mad,
+        "mt_prefix": mt_prefix,
     }
     return a
 
 
-def score_markers(a: ad.AnnData, *, overwrite_lineage: bool = False) -> None:
+def score_markers(
+    a: ad.AnnData,
+    *,
+    overwrite_lineage: bool = False,
+    marker_sets: dict[str, list[str]] | None = None,
+) -> None:
     """score_genes on BM panels; optionally set lineage = argmax score."""
+    panels = BM_MARKER_SETS if marker_sets is None else marker_sets
     present: dict[str, list[str]] = {}
-    for name, genes in BM_MARKER_SETS.items():
+    for name, genes in panels.items():
         hit = [g for g in genes if g in a.var_names]
         present[name] = hit
         if len(hit) >= 2:
@@ -676,7 +765,7 @@ def score_markers(a: ad.AnnData, *, overwrite_lineage: bool = False) -> None:
         a.obs["marker_lineage_score"] = S.max(axis=1)
         if overwrite_lineage or "lineage" not in a.obs:
             a.obs["lineage"] = a.obs["marker_lineage"].astype(str)
-    cov = {k: f"{len(v)}/{len(BM_MARKER_SETS[k])}" for k, v in present.items()}
+    cov = {k: f"{len(v)}/{len(panels[k])}" for k, v in present.items()}
     print(f"  marker gene coverage: {cov}")
 
 
@@ -1396,6 +1485,106 @@ def load_gse298597_counts(*, force: bool = False) -> ad.AnnData:
     return sc.read_h5ad(p)
 
 
+def _gse285379_mtx_dir(raw: Path, key: str) -> Path:
+    """STARsolo filtered MTX lives in ``{key}/filtered`` after extracting the tar.gz."""
+    filtered = raw / key / "filtered"
+    if (filtered / "matrix.mtx.gz").exists() or (filtered / "matrix.mtx").exists():
+        if (filtered / "matrix.mtx").exists() and not (filtered / "matrix.mtx.gz").exists():
+            for name in ("barcodes.tsv", "features.tsv", "matrix.mtx"):
+                src = filtered / name
+                if src.exists():
+                    with src.open("rb") as fin, gzip.open(src.with_suffix(src.suffix + ".gz"), "wb") as fout:
+                        shutil.copyfileobj(fin, fout)
+                    src.unlink()
+        return filtered
+    tar = raw / f"{key}.tar.gz"
+    if not tar.exists():
+        raise FileNotFoundError(f"Missing {tar} (extract GSE285379_RAW.tar under {raw})")
+    dest = raw / key
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.unpack_archive(tar, dest)
+    return _gse285379_mtx_dir(raw, key)
+
+
+def build_gse285379_counts(*, force: bool = False) -> Path:
+    """Human TET2×LPS HSPC STARsolo MTX + immune multiome GEX h5 (GSE285379)."""
+    cfg = PATHS["gse285379"]
+    out: Path = cfg["source"]
+    if out.exists() and not force:
+        return out
+    raw: Path = cfg["raw"]
+    if not raw.exists():
+        raise FileNotFoundError(
+            f"Missing {raw}. Download GEO suppl GSE285379_RAW.tar"
+        )
+    parts: list[ad.AnnData] = []
+    for key, meta in GSE285379_SAMPLES.items():
+        kind = meta["kind"]
+        if kind == "mtx":
+            staged = _gse285379_mtx_dir(raw, key)
+            a = sc.read_10x_mtx(staged, var_names="gene_symbols", cache=False)
+        elif kind == "h5":
+            h5 = raw / f"{key}.h5"
+            if not h5.exists():
+                raise FileNotFoundError(f"Missing {h5} (extract GSE285379_RAW.tar under {raw})")
+            a = sc.read_10x_h5(h5)
+        else:
+            raise ValueError(kind)
+        a.var_names_make_unique()
+        n_raw = a.n_obs
+        if kind == "h5":
+            sc.pp.filter_cells(a, min_genes=200)
+            print(f"  {key}: {n_raw:,} → {a.n_obs:,} × {a.n_vars:,} (min_genes=200)")
+        else:
+            print(f"  {key}: {a.n_obs:,} × {a.n_vars:,}")
+        a.obs_names = [f"{key}_{b}" for b in a.obs_names]
+        a.obs["sample_name"] = key
+        a.obs["dataset"] = "CHIP_GSE285379"
+        a.obs["technical_batch"] = "CHIP_GSE285379_10x"
+        a.obs["tissue"] = "bone_marrow"
+        a.obs["organism"] = "human"
+        a.obs["age_months"] = np.nan
+        a.obs["age_label"] = "NA"
+        a.obs["age_group"] = "NA"
+        for k, v in meta.items():
+            if k in {"kind", "filename_genotype_token"}:
+                continue
+            a.obs[k] = v
+        a.obs["lineage"] = np.where(
+            a.obs["compartment"].astype(str) == "HSPC", "HSPC", "Other"
+        )
+        a.obs["cell_type"] = np.where(
+            a.obs["compartment"].astype(str) == "HSPC",
+            "FACS_HSPC",
+            "immune_progeny",
+        )
+        parts.append(a)
+    combined = _concat_samples(parts)
+    combined.uns["gse285379_filename_note"] = (
+        "GSM8701472 h5 filename token is KO but GEO title/characteristics are WT; "
+        "GSM8701473 filename token is WT but characteristics are TET2-mutant. "
+        "obs['genotype'] follows the series matrix."
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp.h5ad")
+    combined.write_h5ad(tmp, compression="gzip")
+    tmp.replace(out)
+    print(f"  wrote counts {out} ({combined.n_obs:,} × {combined.n_vars:,})")
+    print(
+        combined.obs.groupby(
+            ["compartment", "genotype", "treatment"], observed=True
+        )
+        .size()
+        .to_string()
+    )
+    return out
+
+
+def load_gse285379_counts(*, force: bool = False) -> ad.AnnData:
+    p = build_gse285379_counts(force=force)
+    return sc.read_h5ad(p)
+
+
 def gpu_qc_lognorm_plate(
     a: ad.AnnData,
     qc_batch_key: str,
@@ -1563,6 +1752,20 @@ def process_dataset(
             gene_mad=5.0,
             run_scrublet=run_scrublet,
         )
+    elif name == "gse285379":
+        # Human GRCh38; HSPC STARsolo vs immune multiome GEX. MT- not mt-.
+        # Scrublet on the 285–1300-cell TET2 HSPC libraries calls 67–100% doublets.
+        a = load_gse285379_counts(force=force)
+        a = gpu_qc_preprocess(
+            a,
+            qc_batch_key="sample_name",
+            scrublet_batch_key="sample_name",
+            min_genes=200,
+            max_mt=20.0,
+            gene_mad=5.0,
+            run_scrublet=False,
+            mt_prefix="MT-",
+        )
     elif name == "gse163503":
         # Bulk DESeq2-normalized HSC Smart-seq2 — no Scrublet; log1p only
         a = load_gse163503_counts(force=force)
@@ -1600,7 +1803,14 @@ def process_dataset(
             or "lineage" not in a.obs
             or (a.obs["lineage"] == "Other").mean() > 0.5
         )
-        score_markers(a, overwrite_lineage=overwrite)
+        if name == "gse285379":
+            score_markers(a, overwrite_lineage=False, marker_sets=HUMAN_BM_MARKER_SETS)
+            if "marker_lineage" in a.obs:
+                immune = a.obs["compartment"].astype(str) == "immune_progeny"
+                a.obs["lineage"] = a.obs["lineage"].astype(str)
+                a.obs.loc[immune, "lineage"] = a.obs.loc[immune, "marker_lineage"].astype(str)
+        else:
+            score_markers(a, overwrite_lineage=overwrite)
         if name == "gse246464" and "score_HSPC" in a.obs:
             # Drop weak HSPC calls that still win argmax on noise
             weak = (
