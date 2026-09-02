@@ -24,6 +24,7 @@ dependencies = [
     "nvidia-cuda-nvrtc-cu12>=12.1,<13",
     "nvidia-cuda-runtime-cu12>=12.1,<13",
     "pandas>=1.5,<3",
+    "pylimma>=0.1.0",
     "py-scmetabolism",
     "python-pptx",
     "rapids-singlecell[rapids12]==0.13.0",

@@ -315,6 +315,7 @@ dependencies = [
     { name = "pandas" },
     { name = "phlowerpy" },
     { name = "py-scmetabolism" },
+    { name = "pylimma" },
     { name = "python-pptx" },
     { name = "rapids-singlecell", extra = ["rapids12"] },
     { name = "requests" },
@@ -359,6 +360,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=1.5,<3" },
     { name = "phlowerpy", specifier = "==0.1.5" },
     { name = "py-scmetabolism" },
+    { name = "pylimma", specifier = ">=0.1.0" },
     { name = "python-pptx" },
     { name = "rapids-singlecell", extras = ["rapids12"], specifier = "==0.13.0" },
     { name = "requests", specifier = ">=2.32.3" },
@@ -3834,6 +3836,23 @@ wheels = [
     { url = "https://pypi.nvidia.com/pylibraft-cu12/pylibraft_cu12-25.4.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:373098d8df8b675d8324a6d9fb55551edebdee635271eb5d5a38d7128f6cb9fc" },
     { url = "https://pypi.nvidia.com/pylibraft-cu12/pylibraft_cu12-25.4.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:817a6cf223de9e2ad72ba4b61530e86b050d93ab9692bd68a2eb7b97c2f957cd" },
     { url = "https://pypi.nvidia.com/pylibraft-cu12/pylibraft_cu12-25.4.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:6facd226638040be7ebef85b47f47ee51053beb1e874b7bc36996b075ced2536" },
+]
+
+[[package]]
+name = "pylimma"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anndata" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "patsy" },
+    { name = "scipy" },
+    { name = "statsmodels" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/01/04/5f9a17f35c3b55dd99de246ae06eb288258477d1290b898746424bb8695e/pylimma-0.1.0.tar.gz", hash = "sha256:b69ed057c2274d8eb75dea537e3f65559a9537814fc4704d2f2f1d2ea73c9729", size = 280040, upload-time = "2026-05-01T21:24:02.767Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/ac/29d95d6233d7b6db1c206a29032da53b4b948c4ad5421b0f76c9bcf0b135/pylimma-0.1.0-py3-none-any.whl", hash = "sha256:0df38200e1ba0f87f4a39f4c5e8e59991634fc288bc34b0bfb153482b6b81381", size = 219284, upload-time = "2026-05-01T21:24:01.233Z" },
 ]
 
 [[package]]
