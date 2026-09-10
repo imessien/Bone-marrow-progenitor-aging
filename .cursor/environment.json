@@ -1,0 +1,4 @@
+{
+  "name": "bone-marrow",
+  "install": "bash .cursor/install.sh"
+}
