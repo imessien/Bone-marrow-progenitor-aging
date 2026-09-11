@@ -65,13 +65,12 @@ BATCH_SIZE = 2048
 N_PERM = 9_999
 PERM_BATCH = 20_000
 
-_PATHWAY_OF = {
-    "ATP GENERATION": "Glycolysis",
-    "KREBS CYCLE": "OXPHOS / TCA",
-    "OXYDATIVE PHOSPHORYLATION": "OXPHOS / TCA",
-    "PENTOSE PHOSPHATE PATHWAY": "PPP",
-}
-PATHWAYS = ("OXPHOS / TCA", "PPP", "Glycolysis")
+KEEP_SUBSYSTEMS = (
+    "KREBS CYCLE",
+    "OXYDATIVE PHOSPHORYLATION",
+    "PENTOSE PHOSPHATE PATHWAY",
+    "ATP GENERATION",
+)
 SPECIES = (
     {
         "stem": "mice",
@@ -476,6 +475,13 @@ def _fmt_p(p):
     return f"{p:.4f}" if p < 0.001 else f"{p:.3f}" if p < 0.01 else f"{p:.2f}"
 
 
+def _p_label(p, *, bold: bool):
+    s = _fmt_p(p)
+    if bold:
+        return rf"$\mathbf{{p = {s}}}$"
+    return f"$p$ = {s}"
+
+
 _TASK_INFO: dict[str, pd.DataFrame] = {}
 
 
@@ -492,10 +498,10 @@ def _axis_tasks(db: Path):
     info = _task_info(db)
     groups: dict[str, list[str]] = {}
     for task, sub in info["Subsystem"].astype(str).items():
-        axis = _PATHWAY_OF.get(str(sub))
-        if axis is None:
+        sub = str(sub)
+        if sub not in KEEP_SUBSYSTEMS:
             continue
-        groups.setdefault(axis, []).append(str(task))
+        groups.setdefault(sub, []).append(str(task))
     return groups
 
 
@@ -592,12 +598,10 @@ def _arm_stats(y, genotype, treatment, genotypes, treatments, device):
 
 def _task_title(name: str):
     t = str(name)
-    if "COMPLEX II" in t.upper():
-        return "Complex II"
-    if "COMPLEX I" in t.upper():
-        return "Complex I"
     if " - " in t:
-        t = t.split(" - ")[-1]
+        t = t.split(" - ")[-1].strip()
+    elif t.endswith(")") and "(" in t:
+        t = t[t.rfind("(") + 1 : t.rfind(")")].strip()
     return t[:1].upper() + t[1:] if t else t
 
 
@@ -624,7 +628,7 @@ def _readable_gene(name: str):
 
 def _task_groups(names, db: Path):
     axis_of = {t: axis for axis, ts in _axis_tasks(db).items() for t in ts}
-    groups = {axis: [] for axis in PATHWAYS}
+    groups = {axis: [] for axis in KEEP_SUBSYSTEMS}
     seen = set()
     for n in map(str, names):
         if n in seen:
@@ -633,7 +637,7 @@ def _task_groups(names, db: Path):
         axis = axis_of.get(n)
         if axis is not None:
             groups[axis].append(n)
-    return [(axis, groups[axis]) for axis in PATHWAYS if groups[axis]]
+    return [(axis, groups[axis]) for axis in KEEP_SUBSYSTEMS if groups[axis]]
 
 
 def _is_mt_nd(name: str):
@@ -688,12 +692,12 @@ def _task_subplots(groups, *, w: float, h: float, share: bool):
         sharey=share,
     )
     fig.subplots_adjust(
-        left=0.10,
+        left=0.16,
         right=0.88,
         top=0.90,
         bottom=0.16,
-        wspace=0.90,
-        hspace=1.15,
+        wspace=0.55,
+        hspace=0.70,
     )
     return fig, axs, ncols
 
@@ -714,9 +718,7 @@ def _arm_grid(row, spec):
     return np.clip(grid / m, -1.0, 1.0) if m > 0 else np.zeros_like(grid)
 
 
-def _paint_2x2(
-    ax, grid, spec, *, cmap, vmin, vmax, xlab, ylab=None, title=None, abs_c=True
-):
+def _paint_2x2(ax, grid, spec, *, cmap, vmin, vmax, xlab, ylab=None, title=None):
     im = ax.imshow(
         grid, cmap=cmap, vmin=vmin, vmax=vmax, origin="upper", aspect="equal"
     )
@@ -728,20 +730,17 @@ def _paint_2x2(
         ax.set_title(title, fontweight="bold", fontsize=12, pad=10)
     ax.set_xlabel(xlab, fontsize=8, labelpad=8)
     if ylab is not None:
-        ax.set_ylabel(ylab, fontweight="bold", labelpad=12)
+        ax.set_ylabel(ylab, fontweight="bold", fontsize=9, labelpad=12)
     for ii in range(grid.shape[0]):
         for jj in range(grid.shape[1]):
-            val = float(grid[ii, jj])
-            hot = abs(val) > 0.55 if abs_c else val > 0.55
             ax.text(
                 jj,
                 ii,
-                f"{val:.2f}",
+                f"{float(grid[ii, jj]):.2f}",
                 ha="center",
                 va="center",
-                color="white" if hot else "black",
+                color="black",
                 fontsize=9,
-                fontweight="bold",
             )
     return im
 
@@ -751,8 +750,8 @@ def _plot_gene_cloud(tab, spec):
     groups = _task_groups(tab["task"], spec["db"])
     if not groups:
         return
-    fig, axs, ncols = _task_subplots(groups, w=3.8, h=4.2, share=True)
-    fig.subplots_adjust(top=0.88, bottom=0.20, hspace=1.35)
+    fig, axs, ncols = _task_subplots(groups, w=6.0, h=5.2, share=True)
+    fig.subplots_adjust(top=0.88, bottom=0.16, hspace=0.80)
     drew_mix = False
     for i, (axis, tasks) in enumerate(groups):
         slot = dict(zip(_row_cols(len(tasks), ncols), tasks))
@@ -834,19 +833,13 @@ def _plot_gene_cloud(tab, spec):
                 _task_title(task),
                 fontweight="bold" if pred else "normal",
                 fontsize=11,
-                pad=10,
+                pad=12,
                 color="0.0" if pred else "0.15",
             )
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
             ax.tick_params(length=3, labelsize=8)
-            xlab = f"{challenge} main\n{pred}" if pred else f"{challenge} main"
-            ax.set_xlabel(
-                xlab,
-                fontsize=8,
-                fontweight="bold" if pred else "normal",
-                labelpad=8,
-            )
+            ax.set_xlabel(f"{challenge} main", fontsize=8, labelpad=8)
             if j == 0:
                 ax.set_ylabel("interaction", labelpad=10)
         used = sorted(slot)
@@ -895,7 +888,7 @@ def _plot_task_2x2(tab, spec):
     groups = _task_groups(tab["task"], spec["db"])
     if not groups:
         return
-    fig, axs, ncols = _task_subplots(groups, w=3.8, h=3.9, share=False)
+    fig, axs, ncols = _task_subplots(groups, w=6.0, h=5.2, share=False)
     im, used = None, []
     pmap = tab.set_index("task")["p_perm"]
     for i, (axis, tasks) in enumerate(groups):
@@ -908,8 +901,8 @@ def _plot_task_2x2(tab, spec):
             task = slot[j]
             row = tab.loc[tab["task"] == task].iloc[0]
             p = float(pmap[task]) if task in pmap.index else np.nan
-            pred = _task_title(task) if np.isfinite(p) and p < P_SIG else None
-            xlab = f"{pred}\n$p$ = {_fmt_p(p)}" if pred else f"$p$ = {_fmt_p(p)}"
+            pred = np.isfinite(p) and p < P_SIG
+            xlab = _p_label(p, bold=pred)
             im = _paint_2x2(
                 ax,
                 _arm_grid(row, spec),
@@ -921,10 +914,7 @@ def _plot_task_2x2(tab, spec):
                 ylab=axis if j == 0 else None,
             )
             ax.set_xlabel(
-                xlab,
-                fontsize=8,
-                fontweight="bold" if pred else "normal",
-                labelpad=10,
+                xlab, fontsize=8, fontweight="bold" if pred else "normal", labelpad=10
             )
             ax.set_title(
                 _task_title(task),

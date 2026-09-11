@@ -19,8 +19,8 @@
 \renewcommand{\textfraction}{0.05}
 \renewcommand{\floatpagefraction}{0.7}
 
-\title{Metabolomics of Tet2 Knockout in Clonal Haematopoiesis\\
-of Indeterminate Potential (CHIP)}
+\title{Metabolomics of Clonal Haematopoiesis of Indeterminate Potential (CHIP) for Inflammaging \\
+}
 \author{}
 \date{}
 
@@ -28,46 +28,60 @@ of Indeterminate Potential (CHIP)}
 \maketitle
 
 \begin{abstract}
-    Age-associated myelopoiesis is the myeloid demand of aged marrow. Clonal
-    Haematopoiesis of Indeterminate Potential (CHIP) clones accumulate with years and
-    turn interleukin-1 (IL-1)-driven emergency myelopoiesis into a chronic state.
-    Previously pusblished work mapped TET2 and DNMT3TA loss to myeloid lipid anabolism and OGT, O-GlcNAc and ACLY lipid circuit in myeloid cells. Polar
-    metabolites from HSPCs under IL-1 have not been measured. We now have designed a model of to simulate this 2$\times$2 experiment. We used a visible neural network (VNN) to model the metabolic changes that occur when one gene-metabolomic node differences between groups. Gene marker plots highlight where the encding intreaction is possible. This done by testing whether the mean gene-embedding interaction in its gene set is more extreme than random gene sets of the same size over 9{,}999 shuffles. The $p$ under each 2$\times$2 panel is that value. Mouse HSPCs meet it for HMP shunt ($p=0.0001$) and human HSPCs meet it for glycolysis, Complex~I and Complex~II (all $p=0.0001$), HMP shunt ($p=0.0014$), Krebs-cycle NADH generation
-    ($p=0.006$), and ATP regeneration from glucose ($p=0.043$). This suggests a proposed experiment of measuring the polar metabolites from the HSPCs under IL-1 conditions and validate the model either in cells or medium. This will be done by first performing a cheap screens to test whether the cargo is used for output, catalysis, or PPP fitness. Then performing polar liquid chromatography mass spectrometry (LC-MS) of cells
-    and medium to test whether lactate, succinate, itaconate, and $\alpha$-KG leave the cell.
+    Clonal haematopoiesis of indeterminate potential (CHIP) clones that carry TET2
+    convert interleukin-1 (IL-1) emergency myelopoiesis into a chronic state. In
+    TET2-mutant myeloid cells, glucose uptake is unchanged while carbon is routed into
+    pentose-phosphate pathway (PPP) intermediates and UDP-GlcNAc, then OGT and
+    ACLY-linked lipid storage. The useful model is allocation of carbon and redox, not
+    a simple rise in glycolytic rate. No study has reported a TET2 genotype $\times$
+    recombinant IL-1$\beta$ interaction on flux (ECAR, OCR, or $^{13}$C fate). McClatchy
+    is haematopoietic stem and progenitor cell (HSPC) RNA; Kim is zymosan myeloid lipid;
+    Ni{\~n}o is an HSPC metabolome without IL-1; Flores-Gomez is IL-1$\beta$ training of
+    human CD34$^{+}$ cells without TET2 mutants. A visible neural network (VNN) on
+    McClatchy's Tet2 $\times$ IL-1 HSPC gene scores meets $p=0.0001$ for HMP shunt in
+    mouse, matching Kim's tracing. Human TET2 $\times$ LPS encodings meet glycolysis,
+    Complex~I, Complex~II, and HMP shunt. We hypothesize that TET2 loss changes how
+    IL-1R allocates glucose carbon and redox (PPP / UDP-GlcNAc / OGT). Polar LC-MS of
+    cells and medium on the same four arms, a clone knockout plus IL-1 added, tests that
+    allocation. Glycolysis and OXPHOS are human-LPS and Ni{\~n}o main effects. Lactate,
+    succinate, itaconate, and $\alpha$-KG are secondary or negative reads on the mouse
+    IL-1 2$\times$2.
 \end{abstract}
 
 \section*{Introduction}
 
 CHIP is an expanded blood clone carrying a myeloid-malignancy driver at variant allele
 frequency of at least 2\%, without unexplained cytopenia or frank neoplasm. That
-threshold is a sequencing convention. TET2 and DNMT3A are
-the common drivers. Clones accumulate with years. Age-associated myelopoiesis is the
-myeloid demand of aged marrow, and interleukin-1 (IL-1) is a main cytokine of that tone.
+threshold is a sequencing convention. A common driver is TET2, the metabolic clone. Clones accumulate with years.
+Age-associated myelopoiesis is the myeloid demand of aged marrow, and interleukin-1 (IL-1) is a main cytokine of that tone.
 IL-1 on young wild-type haematopoietic stem and progenitor cells (HSPCs) is emergency
 myelopoiesis as an acute event. CHIP turns that event-programme chronic. Mutant myeloid
 cells then amplify inflammasome tone, the clone expands, wild-type haematopoietic
 stem cells (HSCs) exhaust, and inflammaging is amplified. We start with Tet2 knockout
-because TET2 is the metabolic clone. DNMT3A is the clone with stronger bone and frailty
-evidence; it is not this polar panel. Kim, Hergott and Ebert mapped TET2-mutant innate
+because TET2 is the metabolic clone and the RNA 2$\times$2 already exists. Polar LC-MS is the
+readout. Age-associated myelopoiesis is why that loop exists in people. Kim, Hergott and Ebert mapped TET2-mutant innate
 activation onto O-GlcNAc and ACLY-linked lipid anabolism in myeloid
-cells~\cite{Kim2026TET2metabolism}. Gene-metabolite task scores already
-indicate which polar nodes differ between Tet2 and wild-type under IL-1.
-Those indicated metabolites are the hypothesis this experiment measures in the
-osteoimmune niche that inflammation occupies.
+cells~\cite{Kim2026TET2metabolism}. A four-hour IL-1$\beta$ pulse already trains human
+CD34$^{+}$ progenitors toward granulocyte-macrophage output and later TNF/IL-1$\beta$
+recall; TET2 genotype and flux were not in that assay~\cite{FloresGomez2024IL1training}.
+The hypothesis is that TET2 loss changes how IL-1R allocates glucose carbon and redox
+through the PPP, UDP-GlcNAc, and OGT, not that Tet2 and IL-1 both raise glycolytic rate.
+Gene-metabolite task scores already indicate which polar nodes differ between Tet2 and
+wild-type under IL-1. Those indicated metabolites are what this experiment measures.
 
 In marrow, IL-1 expands Tet2-mutant HSPCs and biases them toward myeloid output. Human TET2-edited HSPCs under
 LPS ask the same question in another species. Gene-level RNA on that 2$\times$2 indicates
 which metabolic nodes differ from a shared gene profile.
-Metabolic-task scores sit downstream of transcript counts and are not flux. The
-hypothesis is that Tet2 HSPCs export lactate, succinate, itaconate, and $\alpha$-KG under
-IL-1 at levels that differ from wild-type on the same 2$\times$2. Cheap cell assays on
-the edited HSPCs come first, to de-risk that measurement. Colony assays,
-5-hydroxymethylcytosine, and G6PD or Seahorse test whether that RNA indication is used
-for output, catalysis, or PPP fitness. Polar LC-MS of HSPC cells and medium is still
-planned on the same cultures. It asks whether the indicated metabolites leave the cell.
-A later SUCNR1 assay would test whether medium succinate is sensed. Polar metabolomics
-extends the RNA indication into metabolites the niche, bone, and clone can sense.
+Metabolic-task scores sit downstream of transcript counts and are not flux. Mouse RNA on
+the IL-1 2$\times$2 points at HMP shunt. Human TET2 $\times$ LPS RNA points at glycolysis
+and OXPHOS as well. Those four arms are the clone you knock out plus the IL-1 you add.
+Cheap cell assays on the edited HSPCs come first. Colony assays, 5-hydroxymethylcytosine,
+and G6PD or Seahorse test whether that RNA indication is used for output, catalysis, or
+PPP fitness. Polar LC-MS of HSPC cells and medium is still planned on the same cultures.
+The primary panel is PPP and hexosamine species. Lactate, succinate, itaconate, and
+$\alpha$-KG are secondary reads from the human LPS map and from macrophage lore. A later
+SUCNR1 assay would test whether medium succinate is sensed. Polar metabolomics extends
+the RNA indication into metabolites the niche, bone, and clone can sense.
 
 \section*{Background}
 
@@ -101,12 +115,16 @@ Fuster and colleagues already made that myeloid IL-1$\beta$ cargo causal for ins
 resistance in ageing and obesity~\cite{Fuster2020TET2insulin}. That is the CHIP limb.
 It is not chronological aging.
 
-Sorted HSPCs do not close the macrophage IL-1 loop, so a young Tet2 $\times$ IL-1
-2$\times$2 still adds the cytokine. The four arms are a clone you can knock out plus
+Sorted HSPCs do not close the macrophage IL-1 loop, so a young Tet2 or Dnmt3a
+$\times$ IL-1 2$\times$2 still adds the cytokine. The four arms are a clone you can knock out plus
 IL-1 you add. Polar LC-MS is the readout. Age-associated myelopoiesis is why that loop
-exists in people. It is not what the four arms measure. No public metabolome has
-measured those species from Tet2 HSPCs under IL-1. Polar export of that panel into the
-niche that already carries IL-1 is the cargo that has not been measured.
+exists in people. It is not what the four arms measure. No study has reported a TET2
+genotype $\times$ recombinant IL-1$\beta$ interaction on flux (ECAR, OCR, or $^{13}$C
+fate). McClatchy is RNA~\cite{McClatchy2023TET2IL1}. Kim is zymosan and myeloid
+lipid~\cite{Kim2026TET2metabolism}. Ni{\~n}o is an HSPC metabolome without
+IL-1~\cite{Nino2026TETmetabolism}. Flores-Gomez is IL-1$\beta$ training without TET2
+mutants~\cite{FloresGomez2024IL1training}. Polar export of PPP and hexosamine species
+into the niche that already carries IL-1 is the cargo that has not been measured.
 
 He and colleagues synthesise skeletal fragility as a composite of that aged osteoimmune
 niche, not bone mineral density (BMD) alone~\cite{He2026ImmuneAgeingSkeletal}. CHIP-
@@ -115,34 +133,21 @@ size. Direct bone evidence is strongest for DNMT3A-mutant
 clones~\cite{Kim2021Dnmt3aOsteoporosis,Wang2024DNMT3Abone}. Bone-specific evidence for
 TET2 remains limited~\cite{He2026ImmuneAgeingSkeletal,Winter2024CHOsteoNiche}.
 
-DNMT3A models already explain inflammatory bone loss. Polar cargo is the TET2
-metabolic extension, not a DNMT3A bone assay. Gene-metabolite task scores
-already indicate between-group differences at succinate, $\alpha$-KG, lactate, and PPP
-nodes. No polar metabolome has measured those metabolites from Tet2 HSPCs under IL-1.
-That cargo reaches the osteoimmune niche He places under skeletal fragility. It also
-reaches IL-1-driven clone expansion that feeds inflammaging. Extracellular succinate binds SUCNR1 on osteoclast-lineage cells and
-drives osteoclastogenesis, a bone-remodeling path into frailty~\cite{Guo2017Succinate}.
-The same receptor on HSPCs restricts haematopoiesis. Succinate can expand clones when
-SUCNR1 is low, an autocrine path into the CHIP-inflammaging
-loop~\cite{Cuminetti2026SUCNR1}. 4-Octyl itaconate alkylates GAPDH and is
-anti-inflammatory in vivo, adjacent to resolution in that same tone~\cite{Liao20194OI}.
-TET2 uses $\alpha$-KG as co-substrate. Succinate, fumarate and 2-hydroxyglutarate
-compete with it~\cite{Zhang2025TET2dioxygenase}. Ascorbate is high in HSCs and feeds
-TET2~\cite{Agathocleous2017Ascorbate}. A polar LC-MS panel on this HSPC 2$\times$2 would
-test whether those cofactors and competitors move with Tet2 under IL-1.
-
 The TET2 metabolic paper this extension is written against is Kim, Hergott, Ebert and
 colleagues~\cite{Kim2026TET2metabolism}. An in vivo genome-wide CRISPR screen in primary
 wild-type and Tet2-knockout HSPCs, read out in zymosan peritonitis, recovered Ogt and
 Acly as Tet2-selective inflammation nodes. Tet2 restrains O-linked $N$-acetylglucosamine
 transferase (OGT). Loss raises O-GlcNAc, H3K4me3 at lipid-anabolic loci, and ATP-citrate
-lyase (ACLY) activity. Mouse neutrophils, bone-marrow-derived macrophages (BMDMs), and
-human CD34$^{+}$-derived macrophages accumulate di- and triacylglycerols and cholesterol
-esters. Polar metabolite profiling of Tet2-knockout BMDMs ranked glycerophospholipid
-metabolism, not lactate, succinate, itaconate, or $\alpha$-KG export. ACLY inhibition
-blunts Tet2-knockout hyperinflammation, including Il1b. That is myeloid lipid anabolism
-under innate challenge. It is not FACS-sorted HSPC polar LC-MS on a Tet2 $\times$ IL-1
-2$\times$2, and it is not conditioned-medium cargo into the osteoimmune niche.
+lyase (ACLY) activity. Glucose uptake is unchanged. $^{13}$C-glucose tracing routes more
+carbon into PPP intermediates and UDP-GlcNAc. Mouse neutrophils, bone-marrow-derived
+macrophages (BMDMs), and human CD34$^{+}$-derived macrophages accumulate di- and
+triacylglycerols and cholesterol esters. Polar metabolite profiling of Tet2-knockout
+BMDMs ranked glycerophospholipid metabolism, not lactate, succinate, itaconate, or
+$\alpha$-KG export. ACLY inhibition blunts Tet2-knockout hyperinflammation, including
+Il1b. That is myeloid lipid anabolism under innate challenge. It is not FACS-sorted HSPC
+polar LC-MS on a Tet2 $\times$ IL-1 2$\times$2, and it is not conditioned-medium cargo into
+the osteoimmune niche. The tracing is the prior that the mouse HMP-shunt encoding
+matches.
 
 Ni{\~n}o and colleagues report that Tet2 HSPCs overexpress glycolysis and OXPHOS genes,
 enlarge mitochondria, and need glucose-6-phosphate dehydrogenase (G6PD) and the PPP to
@@ -151,24 +156,25 @@ HSPCs blunt AP-1 inflammatory adaptation. Monocyte-macrophage daughters amplify
 it~\cite{HuergaEncabo2026TET2inflammation}. Polar cargo from HSPCs can occupy the
 inflammaging niche without mixing those daughters into the assay.
 
-No public metabolome has measured those species from Tet2 HSPCs under IL-1.
 McClatchy GSE209994 and Huerga Encabo GSE285379 are
 RNA-seq~\cite{McClatchy2023TET2IL1,HuergaEncabo2023TET2neutrophil}. Agathocleous and
 Lalioti supply the low-input polar LC-MS
 method~\cite{Agathocleous2017Ascorbate,Lalioti2025HSCmetabolome}. Kim supplies the TET2
-myeloid lipidome, and Ni{\~n}o supplies the HSPC fitness map. Measuring lactate,
-succinate, itaconate, and $\alpha$-KG/succinate from Tet2 HSPCs under IL-1 places those
-priors, and the gene-metabolite indications, in the inflammaging niche.
+myeloid lipidome and the PPP/UDP-GlcNAc tracing. Ni{\~n}o supplies the HSPC glycolysis,
+OXPHOS, and G6PD fitness map without IL-1. Flores-Gomez supplies IL-1$\beta$ training of
+human CD34$^{+}$ cells without TET2 mutants or flux~\cite{FloresGomez2024IL1training}.
+Measuring PPP and hexosamine species from Tet2 HSPCs under IL-1, with glycolysis and
+OXPHOS as secondary reads, places those priors on the missing genotype $\times$ IL-1$\beta$
+flux term.
 
 \section*{Approach}
 
-We trained a metabolic visible neural network (VNN) on scCellFie gene scores for
-glycolysis, oxidative phosphorylation/TCA, and pentose-phosphate (PPP) tasks in young
-McClatchy GSE209994 marker-HSPCs (WT/Tet2 $\times$ vehicle/IL-1, 8
+We first trained a metabolic visible neural network (VNN) on scCellFie gene scores for
+glycolysis, oxidative phosphorylation/TCA, and pentose-phosphate (PPP) tasks in those
+GSE209994 marker-HSPCs (WT/Tet2 $\times$ vehicle/IL-1, 8
 libraries)~\cite{McClatchy2023TET2IL1,Armingol2025scCellFie}. A VNN is a neural net
-whose layers follow a knowledge graph rather than a dense hidden stack. Mouse and human
-each get their own VNN. Each is trained for 100 epochs on GPU, reconstructing every cell
-in that species' 2$\times$2. The network reconstructs each cell's gene scores through
+whose layers follow a knowledge graph. Mouse and human samples were trained separately for 100 epochs on GPU, reconstructing every cell
+in that species' 2$\times$2. The VNN reconstructs each cell's gene scores through
 that hierarchy, then the task encodings are frozen. The final figure is the factorial
 interaction map, one 2$\times$2 per metabolic task from the frozen encodings
 (Fig.~\ref{fig:mice}). The statistic is
@@ -178,16 +184,12 @@ representing the relative mean of the interaction. Panel titles are metabolic ta
 match the gene-cloud labels. Those panels are VNN encodings of treatment within
 genotype. Relative mean can look strong when the encodings are small. Glycolysis has
 the most positive Tet2/IL-1 cell in that scaled map. Complex~I has the most negative.
+Scaled colour is not the test. The mouse test that survives Bonferroni is HMP shunt.
 
-Task-gene embeddings on that same 2$\times$2 sit in one pile: the genes share one
-shift, so the encoding interaction between groups is not a usable test. Each task is
-tested by a competitive mean permutation: whether the mean frozen gene-embedding
-interaction in that gene set is more extreme than random sets of the same size. The $p$
-under each panel is $(1+k)/10000$ from 9{,}999 gene shuffles, where $k$ is how many
+The $p$ value under each panel is $(1+k)/10000$ from 9{,}999 gene shuffles, where $k$ is how many times the interaction was more extreme than random gene sets of the same size.
 shuffles were at least as extreme. Bonferroni over seven mouse tasks or eight human
 tasks is about $0.006$ to $0.007$; 9{,}999 shuffles put the floor at $0.0001$, below
 that cutoff. Bold titles mark $p<0.05$.
-
 Human GSE285379 FACS-HSPCs (TET2 $\times$ LPS, 4 libraries) use a separate VNN of the
 same hierarchy (Fig.~\ref{fig:human})~\cite{HuergaEncabo2023TET2neutrophil}. The
 competitive mean test meets $p<0.05$ for glycolysis, Complex~I and Complex~II (all
@@ -196,10 +198,10 @@ regeneration from glucose ($p=0.043$). Bonferroni $0.05/8$ keeps the first five 
 ATP regeneration. Pyruvate decarboxylation ($p=0.65$) and ribose-5-phosphate
 ($p=0.89$) do not meet $p<0.05$. Mouse HSPCs meet $p<0.05$ for HMP shunt ($p=0.0001$).
 The other six mouse tasks do not, including glycolysis ($p=0.48$) and Complex~I
-($p=0.34$).
-
-Ni{\~n}o's G6PD/PPP fitness map is why HMP shunt is worth a cheap G6PD
-assay~\cite{Nino2026TETmetabolism}. The permutation did not test G6PD activity.
+($p=0.34$). Mouse IL-1 therefore nominates PPP allocation. Glycolysis and OXPHOS stay
+with the human LPS map and with Ni{\~n}o's HSPC metabolome, which had no
+IL-1~\cite{Nino2026TETmetabolism}. Ni{\~n}o's G6PD/PPP fitness map is why HMP shunt is
+worth a cheap G6PD assay. The permutation did not test G6PD activity.
 
 Gene embedding clouds are the interpretability for that map (Fig.~\ref{fig:mice-genes},
 Fig.~\ref{fig:human-genes}). Each point is one task gene. $x$ is the challenge main on
@@ -263,49 +265,52 @@ HSPCs so the LC-MS matches the VNN.
 
 \section*{Proposed experiment}
 
-If LC-MS shows succinate in the medium, a SUCNR1 reporter, or an osteoclast/HSPC
-co-culture fed that medium, tests whether the cargo is
+The wet lab is the same four arms. Isolate HSPCs, knock out TET2, and add
+IL-1 or vehicle. HSPCs in a dish do not close the macrophage IL-1 loop, so the cytokine
+is added. Polar LC-MS of cells and medium is the readout. The genotype $\times$ IL-1$\beta$
+term on flux is what would refute or support the allocation hypothesis. Age-associated
+myelopoiesis is why that loop exists in people. It is not what the four arms measure.
+Cheap CFU, 5hmC, and G6PD or Seahorse assays on those cultures come first, to de-risk the
+spend.
+
+The primary polar panel follows the mouse HMP-shunt encoding and Kim's tracing:
+6-phosphogluconate, NADPH/NADP$^{+}$, erythrose-4-phosphate, sedoheptulose-7-phosphate,
+fructose-6-phosphate, and UDP-GlcNAc. Lactate, succinate, itaconate, and $\alpha$-KG are
+pre-specified secondary or negative reads on this IL-1 2$\times$2. They remain in the
+method because the human LPS map and macrophage immunometabolism still nominate them.
+If they move here, that is a Tet2 main effect of the Ni{\~n}o kind, not the mouse
+interaction. If LC-MS shows succinate in the medium, a SUCNR1 reporter, or an
+osteoclast/HSPC co-culture fed that medium, tests whether the cargo is
 sensed~\cite{Guo2017Succinate,Cuminetti2026SUCNR1}. Osteoclast SUCNR1 is the
 bone-remodeling path and HSPC SUCNR1 is the clone-size path. Medium that contains
 succinate but does not move either assay leaves the niche sentence untested. If LC-MS
 shows an $\alpha$-KG/succinate shift and 5hmC did not move at the cheap step, the
 metabolites are not reaching catalysis. Kim already measured the myeloid lipidome on the
 OGT-ACLY circuit. This polar panel, after a cheaper de-risking screen, is the
-HSPC $\times$ IL-1 measurement Kim did not run.
+HSPC $\times$ IL-1 flux measurement that prior has not run.
 
 Matched RNA-seq of the same cultures would later feed a multi-omics factor model and a
 gene-regulatory network from this HSPC 2$\times$2. Those analyses are not required to
 start the cheap assays or the LC-MS. Fracture-union prediction and IL-1$\beta$ blockade
-remain cohort questions. This 2$\times$2 measures what polar cargo Tet2 HSPCs put into
-the niche those cohorts already inhabit.
+remain cohort questions. This 2$\times$2 measures polar cargo from a clone you knock
+out plus IL-1 you add, into the niche those cohorts already inhabit.
 
 \section*{Conclusion}
 
-Mouse and human HSPC RNA already indicate between-group differences at a short
-gene-metabolite list. Most metabolic-task genes share one effect, so the encoding
-2$\times$2 is not a group test. Mouse and human each get their own VNN, trained for
-100 epochs on GPU. The $p$ under each panel is a competitive mean permutation on frozen
-gene embeddings, with 9{,}999 gene shuffles (smallest possible $p=0.0001$). Mouse HSPCs
-meet $p<0.05$ for HMP shunt. Human HSPCs meet it for glycolysis, both OXPHOS complexes,
-HMP shunt, Krebs-cycle NADH generation, and ATP regeneration. Kim named the TET2 myeloid
-lipid circuit. The literature has not measured the polar metabolome on this Tet2
-$\times$ IL-1 HSPC 2$\times$2. TCA intermediates in HSPCs are metabolically quieter than
-in downstream progenitors. Cheap CFU, 5hmC, and G6PD or Seahorse assays on the same four
-arms come first, to de-risk the spend. Those assays test whether the cargo is used for
-output, catalysis, and PPP fitness. Polar LC-MS of cells and medium is still planned. A
-later SUCNR1 reporter or osteoclast/HSPC co-culture would test whether medium succinate
-is sensed.
-
-That niche is marrow inflammaging, with chronic myeloid demand and the cytokine tone
-that expands the clone. Frailty is lost reserve in the osteoimmune niche that shares
-those signals. Polar cargo from Tet2 HSPCs sits next to Kim's myeloid lipidome.
-TET2-selective ligands for osteoclast SUCNR1 and HSPC SUCNR1 test for inflammasome tone
-and resolution. Panel $p$ values come from the gene-set mean shuffles. Succinate and
-$\alpha$-KG sit in TCA/OXPHOS tasks that meet $p<0.05$ in human, not in mouse. Lactate
-sits in glycolysis, which meets that cutoff in human only. Mouse HMP shunt meets
-$p<0.05$; mouse glycolysis and both OXPHOS complexes do not. Cheap cell assays de-risk
-whether those scores are used. Polar LC-MS is still planned, to identify the metabolites
-those scores point to.
+The hypothesis is that TET2 loss changes how IL-1R allocates glucose carbon and redox
+through PPP, UDP-GlcNAc, and OGT, rather than that both perturbations simply raise
+glycolytic rate. Mouse VNN encodings meet that interaction for HMP shunt ($p=0.0001$).
+Human TET2 $\times$ LPS encodings meet glycolysis, both OXPHOS complexes, and HMP shunt;
+those maps are not stacked. Kim's tracing left glucose uptake unchanged and sent
+$^{13}$C into PPP intermediates and UDP-GlcNAc. Ni{\~n}o measured HSPC glycolysis,
+OXPHOS, and G6PD without IL-1. Flores-Gomez trained human CD34$^{+}$ cells with IL-1$\beta$
+without TET2 mutants. No study has reported the genotype $\times$ recombinant IL-1$\beta$
+flux term. The four arms are a clone you knock out plus IL-1 you add, because HSPCs do
+not close the macrophage IL-1 loop. Cheap CFU, 5hmC, and G6PD or Seahorse assays come
+first. Polar LC-MS of cells and medium then tests the allocation panel. Lactate,
+succinate, itaconate, and $\alpha$-KG stay as secondary or negative reads. A later
+SUCNR1 assay would test whether medium succinate is sensed. Age-associated myelopoiesis
+is why that loop exists in people. It is not what the four arms measure.
 
 \bibliographystyle{unsrtnat}
 \bibliography{citations}
