@@ -48,6 +48,7 @@ dependencies = [
     "scgen",
     "upsetplot>=0.9",
     "omicverse>=1.6",
+    "pygam",
 ]
 
 [tool.uv]

@@ -317,6 +317,7 @@ dependencies = [
     { name = "pandas" },
     { name = "phlowerpy" },
     { name = "py-scmetabolism" },
+    { name = "pygam" },
     { name = "pylimma" },
     { name = "python-pptx" },
     { name = "rapids-singlecell", extra = ["rapids12"] },
@@ -362,6 +363,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=1.5,<3" },
     { name = "phlowerpy", specifier = "==0.1.5" },
     { name = "py-scmetabolism" },
+    { name = "pygam" },
     { name = "pylimma", specifier = ">=0.1.0" },
     { name = "python-pptx" },
     { name = "rapids-singlecell", extras = ["rapids12"], specifier = "==0.13.0" },
@@ -3654,6 +3656,18 @@ wheels = [
 ]
 
 [[package]]
+name = "progressbar2"
+version = "4.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-utils" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/1e/5bd376abe32a392e74fffd82feb42ee1472d263bd358d628af20663d0346/progressbar2-4.6.0.tar.gz", hash = "sha256:fe48c8955a84428af77bff2642ba47041e1b8f7c867a5b7cc94f8bc255a8f0cf", size = 542464, upload-time = "2026-08-14T01:07:30.008Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/4c/ba64c450164fa4feaa9c4bb1c6445811d89d6a1995bfc58d039273b698af/progressbar2-4.6.0-py3-none-any.whl", hash = "sha256:2d78bdeb1debef92a39dd9042e0689542bd72d6e2f30b13432db371aa9d8ee4e", size = 104185, upload-time = "2026-08-14T01:07:28.474Z" },
+]
+
+[[package]]
 name = "prometheus-client"
 version = "0.25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3941,6 +3955,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/50/35/b17cb89ff865484c6a20ef46bf9d95a5f07328292578de0b295f4a6beec2/pydot-4.0.1.tar.gz", hash = "sha256:c2148f681c4a33e08bf0e26a9e5f8e4099a82e0e2a068098f32ce86577364ad5", size = 162594, upload-time = "2025-06-17T20:09:56.454Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/32/a7125fb28c4261a627f999d5fb4afff25b523800faed2c30979949d6facd/pydot-4.0.1-py3-none-any.whl", hash = "sha256:869c0efadd2708c0be1f916eb669f3d664ca684bc57ffb7ecc08e70d5e93fee6", size = 37087, upload-time = "2025-06-17T20:09:55.25Z" },
+]
+
+[[package]]
+name = "pygam"
+version = "0.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "progressbar2" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/62/95/f5866f7f8fa2a5a7f55b4711cd23fa592e03e2988f3ea769e4cf884b1a46/pygam-0.12.0.tar.gz", hash = "sha256:7c098dfbfbb7a6b9fa4e1a579380e3b0b866fe8fa56f9d852ffdeaecfe56d5ea", size = 82376, upload-time = "2025-12-18T21:46:13.643Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/2d/cb0cd5865a8dac8869cdd01df17c2c0c94d9aa22b167e1bbfa01559dd3a9/pygam-0.12.0-py3-none-any.whl", hash = "sha256:e66597040fc9b6f113a5a9229fc42fb4ea60e8f55942a3b438caccf0512835f4", size = 84618, upload-time = "2025-12-18T21:46:11.759Z" },
 ]
 
 [[package]]
@@ -4293,6 +4321,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/52/a9/0c0db8d37b2b8a645666f7fd8accea4c6224e013c42b1d5c17c93590cd06/python_pptx-1.0.2.tar.gz", hash = "sha256:479a8af0eaf0f0d76b6f00b0887732874ad2e3188230315290cd1f9dd9cc7095", size = 10109297, upload-time = "2024-08-07T17:33:37.772Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl", hash = "sha256:160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba", size = 472788, upload-time = "2024-08-07T17:33:28.192Z" },
+]
+
+[[package]]
+name = "python-utils"
+version = "4.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5d/71/ec6665d4ce42ee5a59fffd31a4d5164f92da15ccb8c758dba13d2419ea53/python_utils-4.0.1.tar.gz", hash = "sha256:4e8e8ecaba3862f843a60c1982c99cda23b522f417006a807996a876c18beb8d", size = 43765, upload-time = "2026-08-30T19:26:04.591Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/65/4d/df2b7b53f759af128123afc73ce7094a29286ef4293dfeb2341f8469018e/python_utils-4.0.1-py3-none-any.whl", hash = "sha256:6017bb56498a58656ecf48e66fb1f1632c7b33f9f2968548a021563e85be1aed", size = 39920, upload-time = "2026-08-30T19:26:03.101Z" },
 ]
 
 [[package]]

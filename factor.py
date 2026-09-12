@@ -66,67 +66,13 @@ BATCH_SIZE = 2048
 N_PERM = 9_999
 PERM_BATCH = 20_000
 
-KEEP_SUBSYSTEMS = (
+SUBSYSTEMS = (
     "KREBS CYCLE",
     "OXYDATIVE PHOSPHORYLATION",
     "PENTOSE PHOSPHATE PATHWAY",
     "ATP GENERATION",
 )
-# EM rate proxies: fixed gene sets (not genotype/treatment labels).
-RATE_SETS_MOUSE = {
-    "cell_cycle": (
-        "Mki67",
-        "Top2a",
-        "Pcna",
-        "Cdk1",
-        "Ccnb1",
-        "Ccna2",
-        "Mcm5",
-        "Mcm6",
-        "Cdc20",
-        "Ube2c",
-    ),
-    "Myc_EM": ("Myc", "Npm1", "Ncl", "Eif4e", "Ldha", "Pkm", "Hk2", "Eno1"),
-    "OXPHOS_EM": (
-        "Atp5a1",
-        "Atp5b",
-        "Atp5c1",
-        "Cox5a",
-        "Cox7b",
-        "Ndufs1",
-        "Ndufv1",
-        "Uqcrc1",
-        "Sdha",
-    ),
-    "Gln_EM": ("Gls", "Glud1", "Slc1a5", "Slc7a5", "Got1", "Got2"),
-}
-RATE_SETS_HUMAN = {
-    "cell_cycle": (
-        "MKI67",
-        "TOP2A",
-        "PCNA",
-        "CDK1",
-        "CCNB1",
-        "CCNA2",
-        "MCM5",
-        "MCM6",
-        "CDC20",
-        "UBE2C",
-    ),
-    "Myc_EM": ("MYC", "NPM1", "NCL", "EIF4E", "LDHA", "PKM", "HK2", "ENO1"),
-    "OXPHOS_EM": (
-        "ATP5F1A",
-        "ATP5F1B",
-        "ATP5F1C",
-        "COX5A",
-        "COX7B",
-        "NDUFS1",
-        "NDUFV1",
-        "UQCRC1",
-        "SDHA",
-    ),
-    "Gln_EM": ("GLS", "GLUD1", "SLC1A5", "SLC7A5", "GOT1", "GOT2"),
-}
+
 SPECIES = (
     {
         "stem": "mice",
@@ -136,7 +82,7 @@ SPECIES = (
         "tmap": MOUSE_TMAP,
         "treatments": TREATMENTS,
         "treat_labels": ("vehicle", "IL-1"),
-        "rate_sets": RATE_SETS_MOUSE,
+        "root_arm": "WT_vehicle",
     },
     {
         "stem": "human",
@@ -146,7 +92,7 @@ SPECIES = (
         "tmap": HUMAN_TMAP,
         "treatments": HUMAN_TREATMENTS,
         "treat_labels": ("CTRL", "LPS"),
-        "rate_sets": RATE_SETS_HUMAN,
+        "root_arm": "WT_CTRL",
     },
 )
 MIX_LOW = "#4C72B0"
@@ -156,56 +102,9 @@ LOCAL_OUT = Path(__file__).resolve().parent / "results_local" / "chip_metabolic_
 _MT_ND = {"nd1", "nd2", "nd3", "nd4", "nd4l", "nd5", "nd6"}
 TOP_GENES = 10
 P_SIG = 0.05
-RATE_LOSS_W = 0.5
-MULTIHEAD = True
+RATE_LOSS_W = 0.5  # unused when n_rates=0; kept for optional rate head
 RT_XLSX = Path(__file__).resolve().parent / "Polar Metabolites RT List.xlsx"
 SCCELLFIE_CACHE = RESULTS / "chip_metabolic_graph" / "cache"
-# Task-title keywords → polar RT-list ions (RNA→metabolite prior).
-ION_TASK_HINTS = (
-    ("6-phosphogluconate", ("HMP", "pentose", "ribose-5")),
-    ("fructose 6-phosphate", ("HMP", "fructose-6")),
-    ("fructose-6-phosphate", ("HMP", "fructose-6")),
-    ("D-Erythrose 4-phosphate", ("HMP", "erythrose")),
-    ("erythrose", ("HMP", "erythrose")),
-    ("sedoheptulose", ("HMP", "sedoheptulose", "pentose")),
-    ("Ribose 5-phosphate", ("ribose-5", "HMP")),
-    ("ribose 5-phosphate", ("ribose-5", "HMP")),
-    ("NADPH", ("HMP", "pentose", "ribose-5")),
-    ("NADP+", ("HMP", "pentose")),
-    ("NADP", ("HMP", "pentose")),
-    ("UDP-GlcNAc", ("hexosamine", "UDP", "GlcNAc")),
-    ("UDP-N-acetylglucosamine", ("hexosamine", "UDP", "GlcNAc")),
-    ("Glucose-6-phosphate", ("glycolysis", "ATP generation", "HMP")),
-    ("Glucose 6-phosphate", ("glycolysis", "ATP generation", "HMP")),
-    ("3PG", ("glycolysis", "ATP generation")),
-    ("3-phosphoglycerate", ("glycolysis", "ATP generation")),
-    ("lactate", ("glycolysis", "ATP generation")),
-    ("pyruvate", ("pyruvate", "Krebs")),
-    ("citrate", ("Krebs",)),
-    ("cis-Aconitate", ("Krebs",)),
-    ("alpha-ketoglutarate", ("Krebs", "NADH")),
-    ("α-KG", ("Krebs", "NADH")),
-    ("Succinate", ("COMPLEX II", "Krebs", "succinate")),
-    ("succinate", ("COMPLEX II", "Krebs", "succinate")),
-    ("fumarate", ("Krebs",)),
-    ("malate", ("Krebs",)),
-    ("NADH", ("COMPLEX I", "Krebs", "NADH")),
-    ("NAD+", ("COMPLEX I", "Krebs")),
-    ("itaconate", ("Krebs",)),
-    ("Acetyl Coenzyme A", ("Krebs", "pyruvate")),
-    ("Acetyl-CoA", ("Krebs", "pyruvate")),
-)
-PRIMARY_IONS = (
-    "6-phosphogluconate",
-    "NADPH",
-    "NADP",
-    "erythrose",
-    "sedoheptulose",
-    "fructose-6-phosphate",
-    "UDP-GlcNAc",
-    "UDP-N-acetylglucosamine",
-)
-SECONDARY_IONS = ("lactate", "succinate", "itaconate", "alpha-ketoglutarate", "α-KG")
 _LABEL_OFF = (
     (5, 5),
     (5, -10),
@@ -642,7 +541,7 @@ def _axis_tasks(db: Path):
     groups: dict[str, list[str]] = {}
     for task, sub in info["Subsystem"].astype(str).items():
         sub = str(sub)
-        if sub not in KEEP_SUBSYSTEMS:
+        if sub not in SUBSYSTEMS:
             continue
         groups.setdefault(sub, []).append(str(task))
     return groups
@@ -740,11 +639,14 @@ def _arm_stats(y, genotype, treatment, genotypes, treatments, device):
 
 
 def _task_title(name: str):
+    """Short task label for plots (drop long scCellFie prefixes)."""
     t = str(name)
     if " - " in t:
         t = t.split(" - ")[-1].strip()
     elif t.endswith(")") and "(" in t:
         t = t[t.rfind("(") + 1 : t.rfind(")")].strip()
+    if len(t) > 40 and "(" in t:
+        t = t[: t.find("(")].strip()
     return t[:1].upper() + t[1:] if t else t
 
 
@@ -771,7 +673,7 @@ def _readable_gene(name: str):
 
 def _task_groups(names, db: Path):
     axis_of = {t: axis for axis, ts in _axis_tasks(db).items() for t in ts}
-    groups = {axis: [] for axis in KEEP_SUBSYSTEMS}
+    groups = {axis: [] for axis in SUBSYSTEMS}
     seen = set()
     for n in map(str, names):
         if n in seen:
@@ -780,7 +682,7 @@ def _task_groups(names, db: Path):
         axis = axis_of.get(n)
         if axis is not None:
             groups[axis].append(n)
-    return [(axis, groups[axis]) for axis in KEEP_SUBSYSTEMS if groups[axis]]
+    return [(axis, groups[axis]) for axis in SUBSYSTEMS if groups[axis]]
 
 
 def _is_mt_nd(name: str):
@@ -991,7 +893,7 @@ def _plot_gene_cloud(tab, spec):
         fig.text(
             0.5 * (pos0.x0 + pos1.x1),
             pos0.y1 + 0.028,
-            axis,
+            _subsystem_short(axis),
             ha="center",
             va="bottom",
             fontweight="bold",
@@ -1054,7 +956,7 @@ def _plot_task_2x2(tab, spec):
                 vmin=-1.0,
                 vmax=1.0,
                 xlab=xlab,
-                ylab=axis if j == 0 else None,
+                ylab=_subsystem_short(axis) if j == 0 else None,
             )
             ax.set_xlabel(
                 xlab, fontsize=8, fontweight="bold" if pred else "normal", labelpad=10
@@ -1118,7 +1020,69 @@ def _arm_table(names, obs_stats, genotypes, treatments, pmap=None):
     return pd.DataFrame(rows)
 
 
-def _rank_ions(task_tab: pd.DataFrame, path: Path = RT_XLSX):
+def _chem_norm(s: str) -> str:
+    t = (
+        str(s)
+        .lower()
+        .replace("α", "alpha")
+        .replace("β", "beta")
+        .replace("µ", "u")
+        .replace("coenzyme a", "coa")
+        .replace("coenzyme-a", "coa")
+    )
+    t = re.sub(r"\b(d|l|dl)-", " ", t)
+    t = re.sub(r"[^a-z0-9+]+", " ", t)
+    t = t.replace("nadp+", "nadp").replace("nad+", "nad")
+    return " ".join(t.split())
+
+
+def _compound_queries(compound: str) -> list[str]:
+    """Normalized string forms of an RT compound for Task-name matching."""
+    n = _chem_norm(compound)
+    out = []
+    for q in (n, n.replace(" ", "-"), n.replace(" ", ""), n.replace("+", "")):
+        if q and q not in out:
+            out.append(q)
+    # multi-token: also try without trailing charge words
+    toks = [t for t in n.split() if t not in {"ion", "acid"}]
+    if toks:
+        joined = " ".join(toks)
+        if joined not in out:
+            out.append(joined)
+    return out
+
+
+def _tasks_for_compound(compound: str, tasks: list[str]) -> list[str]:
+    """Match RT compound to scCellFie Task strings (substring / token overlap)."""
+    queries = _compound_queries(compound)
+    if not queries:
+        return []
+    # prefer longer queries first to avoid tiny false hits
+    queries = sorted(queries, key=len, reverse=True)
+    hit = []
+    for task in tasks:
+        tl = _chem_norm(task)
+        ts = _chem_norm(_task_title(task))
+        blob = f"{tl} {ts}"
+        ok = False
+        for q in queries:
+            if len(q) < 4:
+                continue
+            if q in blob:
+                ok = True
+                break
+            # token coverage for multiword compounds (e.g. erythrose 4 phosphate)
+            qt = [t for t in q.replace("-", " ").split() if len(t) >= 4]
+            if len(qt) >= 2 and all(t in blob for t in qt):
+                ok = True
+                break
+        if ok:
+            hit.append(task)
+    return hit
+
+
+def _rank_ions(task_tab: pd.DataFrame, path: Path = RT_XLSX, db: Path | None = None):
+    """Score Polar RT compounds by |interaction| of matched scCellFie Task names."""
     if not path.exists():
         raise FileNotFoundError(path)
     rt = pd.read_excel(path)
@@ -1133,51 +1097,42 @@ def _rank_ions(task_tab: pd.DataFrame, path: Path = RT_XLSX):
         if "formula" in rt.columns
         else [""] * len(compounds)
     )
+    # Prefer full Task-Info names in kept subsystems; fall back to table tasks.
     task_names = task_tab["task"].astype(str).tolist()
+    if db is not None and (db / "Task-Info.csv").exists():
+        info = pd.read_csv(db / "Task-Info.csv")
+        kept = set(KEEP_SUBSYSTEMS)
+        pool = (
+            info.loc[info["Subsystem"].astype(str).isin(kept), "Task"]
+            .astype(str)
+            .tolist()
+        )
+        # only score tasks present in this run's table
+        tab_set = set(task_names)
+        task_names = [t for t in pool if t in tab_set] or task_names
     inter = {
         t: float(a)
-        for t, a in zip(task_names, task_tab["interaction"].to_numpy(dtype=float))
+        for t, a in zip(
+            task_tab["task"].astype(str),
+            task_tab["interaction"].to_numpy(dtype=float),
+        )
     }
     pmap = {
         t: float(p)
-        for t, p in zip(task_names, task_tab["p_perm"].to_numpy(dtype=float))
+        for t, p in zip(
+            task_tab["task"].astype(str),
+            task_tab["p_perm"].to_numpy(dtype=float),
+        )
     }
-
-    def hints_for(compound: str):
-        cl = compound.lower()
-        tokens = set(re.split(r"[^a-z0-9+]+", cl))
-        out = []
-        for key, hints in ION_TASK_HINTS:
-            k = key.lower()
-            if len(k) <= 5:
-                # short keys: token equality only (avoid ADP⊂NADPH)
-                if k in tokens or k.rstrip("+") in tokens:
-                    out.extend(hints)
-            elif k == cl or k in cl or cl in k:
-                out.extend(hints)
-        return tuple(dict.fromkeys(out))
 
     rows = []
     for compound, formula, rt_min in zip(compounds, formulas, rts):
-        hints = hints_for(compound)
-        matched = []
+        matched = _tasks_for_compound(compound, task_names)
         score = 0.0
-        for task, val in inter.items():
-            tl = task.lower()
-            if any(h.lower() in tl for h in hints):
-                w = 1.0 if pmap.get(task, 1.0) < P_SIG else 0.5
-                score += abs(val) * w
-                matched.append(task)
-        cl = compound.lower()
-        panel = (
-            "primary"
-            if any(p.lower() in cl for p in PRIMARY_IONS)
-            else (
-                "secondary"
-                if any(s.lower() in cl for s in SECONDARY_IONS)
-                else ("nominated" if matched else "unlinked")
-            )
-        )
+        for task in matched:
+            w = 1.0 if pmap.get(task, 1.0) < P_SIG else 0.5
+            score += abs(inter.get(task, 0.0)) * w
+        panel = "matched" if matched else "unlinked"
         rows.append(
             {
                 "compound": compound,
@@ -1187,16 +1142,39 @@ def _rank_ions(task_tab: pd.DataFrame, path: Path = RT_XLSX):
                 "panel": panel,
                 "n_tasks": len(matched),
                 "tasks": "; ".join(matched),
+                "task_short": "; ".join(_task_title(t) for t in matched),
             }
         )
     out = pd.DataFrame(rows)
-    panel_rank = {"primary": 0, "secondary": 1, "nominated": 2, "unlinked": 3}
-    out["_pr"] = out["panel"].map(panel_rank).fillna(9)
+    out["_pr"] = out["panel"].map({"matched": 0, "unlinked": 1}).fillna(9)
     out = out.sort_values(
         ["_pr", "score"], ascending=[True, False], kind="mergesort"
     ).drop(columns=["_pr"])
     out["rank"] = np.arange(1, len(out) + 1)
     return out
+
+
+def _plot_ions_bar(ions: pd.DataFrame, spec):
+    """Ranked bar of matched RT compounds (nomination scores)."""
+    sub = ions.loc[ions["panel"].eq("matched")].head(25)
+    if sub.empty:
+        sub = ions.head(15)
+    fig, ax = plt.subplots(figsize=(7.5, max(3.5, 0.28 * len(sub) + 1.2)))
+    y = np.arange(len(sub))[::-1]
+    colors = ["#2ca02c" if p == "matched" else "0.7" for p in sub["panel"].astype(str)]
+    ax.barh(y, sub["score"].to_numpy(dtype=float), color=colors, height=0.7)
+    ax.set_yticks(y)
+    ax.set_yticklabels(sub["compound"].astype(str).tolist(), fontsize=8)
+    ax.set_xlabel("Nomination score (|task interaction|)")
+    ax.set_title(
+        ("Mice" if spec["stem"] == "mice" else "Human")
+        + " · RT ions ↔ scCellFie tasks",
+        fontweight="bold",
+    )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    _out(f"{spec['stem']}_ions.png", fig)
+    plt.close(fig)
 
 
 def _plot_dual_interaction(metab: pd.DataFrame, rates: pd.DataFrame, spec):
@@ -1343,30 +1321,26 @@ def train_vnn(adata, tbg, spec, device):
         if t in tbg.index
         for g in map(str, tbg.loc[t][tbg.loc[t] > 0].index)
     }
-    keep_met = [g for g in names if g in hyp]
-    rate_extra = [
-        g for gs in spec["rate_sets"].values() for g in gs if g in idx and g not in hyp
-    ]
-    keep = list(dict.fromkeys(keep_met + rate_extra))
+    keep = [g for g in names if g in hyp]
+    if not keep:
+        raise ValueError(f"{stem}: no hypothesis genes after subsystem filter")
     X = _to_dense(adata.layers["gene_scores"][:, [idx[g] for g in keep]]).astype(
         np.float32
     )
     X = (X - X.mean(0, keepdims=True)) / (X.std(0, keepdims=True) + 1e-6)
-    rate_X, rate_names = _rate_matrix(adata, spec["rate_sets"])
     graph = build_hypothesis_graph(keep, tbg, db=db)
     if cp is not None:
         cp.get_default_memory_pool().free_all_blocks()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     Xt = torch.from_numpy(np.ascontiguousarray(X)).to(device)
-    Yr = torch.from_numpy(np.ascontiguousarray(rate_X)).to(device)
-    model = MetabolicVNN(graph, n_rates=len(rate_names)).to(device)
+    model = MetabolicVNN(graph, n_rates=0).to(device)
     print(
-        f"{stem}: multi-head VNN on {device}, n={Xt.size(0)} genes={Xt.size(1)} "
-        f"rates={len(rate_names)}",
+        f"{stem}: VNN on {device}, n={Xt.size(0)} genes={Xt.size(1)} "
+        f"tasks={len(graph.tasks)}",
         flush=True,
     )
-    _fit(model, Xt, device, stem=stem, Yr=Yr)
+    _fit(model, Xt, device, stem=stem, Yr=None)
     states, gene_h, rates = _encode_cells(model, Xt)
     cells = pd.DataFrame(
         {
@@ -1378,9 +1352,6 @@ def train_vnn(adata, tbg, spec, device):
     st = states.detach().cpu().numpy()
     for j, name in enumerate(graph.tasks):
         cells[name] = st[:, j]
-    rt_np = rates.detach().cpu().numpy()
-    for j, name in enumerate(rate_names):
-        cells[f"rate:{name}"] = rt_np[:, j]
     _out(f"{stem}_cells.csv", cells)
 
     Y_m, g_m, t_m, _mice = _mouse_means(st, adata.obs)
@@ -1406,34 +1377,22 @@ def train_vnn(adata, tbg, spec, device):
     )
     tab["n_perm"] = N_PERM
     tab["epochs"] = EPOCHS
-    tab["multihead"] = int(MULTIHEAD)
+    # short labels for tables/plots
+    tab["task_short"] = [_task_title(t) for t in tab["task"]]
+    tab["subsystem"] = [
+        _subsystem_short(
+            next(
+                (ax for ax, ts in _axis_tasks(db).items() if t in ts),
+                "",
+            )
+        )
+        for t in tab["task"]
+    ]
     _out(f"{stem}.csv", tab)
 
-    # Head R: same mouse means + identical competitive gene-set permutation
-    Y_r, g_r, t_r, _ = _mouse_means(rt_np, adata.obs)
-    obs_r = _arm_stats(Y_r, g_r, t_r, genotypes, treatments, device)
-    rate_sets_in_keep = {}
-    keep_set = set(keep)
-    for name in rate_names:
-        members = [g for g in spec["rate_sets"][name] if g in keep_set]
-        if members:
-            rate_sets_in_keep[name] = members
-    if rate_sets_in_keep:
-        perm_r = _set_mean_perm(
-            M, g_raw, t_raw, genotypes, treatments, rate_sets_in_keep, keep, device
-        )
-        pmap_r = perm_r.set_index("task")["p_value"]
-    else:
-        pmap_r = pd.Series(dtype=float)
-    rates_tab = _arm_table(rate_names, obs_r, genotypes, treatments, pmap=pmap_r)
-    rates_tab["n_perm"] = N_PERM
-    rates_tab["epochs"] = EPOCHS
-    rates_tab["multihead"] = int(MULTIHEAD)
-    _out(f"{stem}_rates.csv", rates_tab)
-
-    ions = _rank_ions(tab)
+    ions = _rank_ions(tab, db=spec["db"])
     _out(f"{stem}_ions.csv", ions)
-    _plot_dual_interaction(tab, rates_tab, spec)
+    _plot_ions_bar(ions, spec)
 
     arm = {
         f"{gi}_{ti}": M[(g_raw == gi) & (t_raw == ti)].mean(0)
@@ -1464,9 +1423,22 @@ def train_vnn(adata, tbg, spec, device):
         raise ValueError(f"{stem}: no task gene edges for gene cloud")
     genes = pd.concat(rows, ignore_index=True)
     genes["p_perm"] = genes["task"].map(tab.set_index("task")["p_perm"])
+    genes["task_short"] = [_task_title(t) for t in genes["task"]]
     _out(f"{stem}_genes.csv", genes)
     _plot_gene_cloud(genes, spec)
     _plot_task_2x2(tab, spec)
+    _downstream_em_progression(adata, cells, tab, spec)
+
+
+def _downstream_em_progression(adata, cells, tab, spec):
+    """Metabolic EM progression on frozen X_vnn (DPT + branch + GAM).
+
+    Implemented in follow-up; placeholder keeps train_vnn callable.
+    """
+    print(
+        f"{spec['stem']}: skipping EM progression plots (wire X_vnn DPT/GAM next)",
+        flush=True,
+    )
 
 
 def _run_species(spec, gpu):
@@ -1492,11 +1464,17 @@ def replot_saved():
             genes["p_perm"] = genes["task"].map(tab.set_index("task")["p_perm"])
         _plot_gene_cloud(genes, spec)
         _plot_task_2x2(tab, spec)
-        rates = _read_table(f"{stem}_rates.csv")
-        if rates is not None and "p_perm" in rates.columns:
-            _plot_dual_interaction(tab, rates, spec)
-            if RT_XLSX.exists() and _read_table(f"{stem}_ions.csv") is None:
-                _out(f"{stem}_ions.csv", _rank_ions(tab))
+        if RT_XLSX.exists():
+            ions = _rank_ions(tab, db=spec["db"])
+            _out(f"{stem}_ions.csv", ions)
+            _plot_ions_bar(ions, spec)
+        cells = _read_table(f"{stem}_cells.csv")
+        if cells is not None:
+            try:
+                adata = _sccellfie(spec)
+                _downstream_em_progression(adata, cells, tab, spec)
+            except Exception as e:
+                print(f"{stem}: downstream skip ({e})", flush=True)
 
 
 def _gpu_free_mib():
@@ -1508,34 +1486,33 @@ def _gpu_free_mib():
 
 
 def main():
+    print("factor.py: GPU VNN + ions (scCellFie Task-name match)", flush=True)
+    if torch.cuda.is_available():
+        print(
+            f"cuda devices={torch.cuda.device_count()} "
+            f"current={torch.cuda.get_device_name(0)}",
+            flush=True,
+        )
     tabs = [_read_table(f"{s['stem']}.csv") for s in SPECIES]
     genes = [_read_table(f"{s['stem']}_genes.csv") for s in SPECIES]
-    rates = [_read_table(f"{s['stem']}_rates.csv") for s in SPECIES]
-    dual_ok = all(
+    cells = [_read_table(f"{s['stem']}_cells.csv") for s in SPECIES]
+    ready = all(
         t is not None
         and g is not None
-        and r is not None
+        and c is not None
         and "p_perm" in t.columns
-        and "p_perm" in r.columns
-        and "multihead" in t.columns
-        and int(t["multihead"].iloc[0]) == 1
         and "n_perm" in t.columns
         and int(t["n_perm"].iloc[0]) == N_PERM
         and "epochs" in t.columns
         and int(t["epochs"].iloc[0]) == EPOCHS
-        for t, g, r in zip(tabs, genes, rates)
+        for t, g, c in zip(tabs, genes, cells)
     )
-    # also require ion tables when RT list is present
-    ions_ok = (not RT_XLSX.exists()) or all(
-        _read_table(f"{s['stem']}_ions.csv") is not None for s in SPECIES
-    )
-    if dual_ok and ions_ok:
+    if ready:
         replot_saved()
         return
     if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
         raise SystemExit(
-            "CUDA required for multi-head VNN training. "
-            "Agent sandboxes often hide /dev/nvidia*; run in a host shell:\n"
+            "CUDA required for VNN training. Run in a host shell:\n"
             "  source .venv/bin/activate && nvidia-smi && python factor.py"
         )
     free = _gpu_free_mib()
