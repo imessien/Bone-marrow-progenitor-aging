@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import importlib
+import json
 import multiprocessing as mp
 import os
-import re
 import subprocess
 import sys
 import types
@@ -50,13 +50,42 @@ HUMAN_QC = Path(
 )
 
 LINEAGE = "HSPC"
-KEEP_GENOTYPE = ("WT", "Tet2_KO")
-KEEP_TREATMENT = ("vehicle", "IL1b")
 GENOTYPES = ("WT", "Tet2")
-TREATMENTS = ("vehicle", "IL1")
-HUMAN_TREATMENTS = ("CTRL", "LPS")
-MOUSE_TMAP = {"vehicle": "vehicle", "IL1b": "IL1"}
-HUMAN_TMAP = {"CTRL": "CTRL", "LPS": "LPS"}
+KEEP_GENOTYPE = ("WT", "Tet2_KO")
+
+SPECIES = tuple(
+    {
+        "stem": stem,
+        "qc": qc,
+        "db": db,
+        "organism": organism,
+        "tmap": tmap,
+        "keep_treatment": tuple(tmap),
+        "treatments": (tx := tuple(tmap.values())),
+        "treat_labels": treat_labels,
+        "root_arm": f"{GENOTYPES[0]}_{tx[0]}",
+        "arm_order": tuple(f"{g}_{t}" for g in GENOTYPES for t in tx),
+        "arm_labels": tuple(f"{g} · {lab}" for g in GENOTYPES for lab in treat_labels),
+    }
+    for stem, qc, db, organism, tmap, treat_labels in (
+        (
+            "mice",
+            QC,
+            MOUSE_DB,
+            "mouse",
+            {"vehicle": "vehicle", "IL1b": "IL1"},
+            ("vehicle", "IL-1"),
+        ),
+        (
+            "human",
+            HUMAN_QC,
+            HUMAN_DB,
+            "human",
+            {"CTRL": "CTRL", "LPS": "LPS"},
+            ("CTRL", "LPS"),
+        ),
+    )
+)
 
 LEVELS = ("task", "subsystem", "system")
 EPOCHS = 100
@@ -72,39 +101,12 @@ SUBSYSTEMS = (
     "PENTOSE PHOSPHATE PATHWAY",
     "ATP GENERATION",
 )
-
-SPECIES = (
-    {
-        "stem": "mice",
-        "qc": QC,
-        "db": MOUSE_DB,
-        "organism": "mouse",
-        "tmap": MOUSE_TMAP,
-        "treatments": TREATMENTS,
-        "treat_labels": ("vehicle", "IL-1"),
-        "root_arm": "WT_vehicle",
-    },
-    {
-        "stem": "human",
-        "qc": HUMAN_QC,
-        "db": HUMAN_DB,
-        "organism": "human",
-        "tmap": HUMAN_TMAP,
-        "treatments": HUMAN_TREATMENTS,
-        "treat_labels": ("CTRL", "LPS"),
-        "root_arm": "WT_CTRL",
-    },
-)
 MIX_LOW = "#4C72B0"
 MIX_HIGH = "#C44E52"
 GMM_MIN_N = 8
-LOCAL_OUT = Path(__file__).resolve().parent / "results_local" / "chip_metabolic_graph"
 _MT_ND = {"nd1", "nd2", "nd3", "nd4", "nd4l", "nd5", "nd6"}
 TOP_GENES = 10
 P_SIG = 0.05
-RATE_LOSS_W = 0.5  # unused when n_rates=0; kept for optional rate head
-RT_XLSX = Path(__file__).resolve().parent / "Polar Metabolites RT List.xlsx"
-SCCELLFIE_CACHE = RESULTS / "chip_metabolic_graph" / "cache"
 _LABEL_OFF = (
     (5, 5),
     (5, -10),
@@ -196,7 +198,7 @@ def _sccellfie(spec):
         m = (
             raw.obs["lineage"].astype(str).eq(LINEAGE)
             & raw.obs["genotype"].isin(KEEP_GENOTYPE)
-            & raw.obs["treatment"].astype(str).isin(KEEP_TREATMENT)
+            & raw.obs["treatment"].astype(str).isin(spec["keep_treatment"])
         )
         adata = raw[m].copy()
     tmap, organism, db = spec["tmap"], spec["organism"], spec["db"]
@@ -230,6 +232,7 @@ def _sccellfie(spec):
     rsc.get.anndata_to_CPU(adata)
     if "counts" in adata.layers:
         adata.X = adata.layers["counts"].copy()
+    adata.uns.pop("log1p", None)
     run, correct = _import_sccellfie()
     adata = _collapse_corrected_genes(adata, correct.get(organism, {}))
     adata = run(
@@ -334,13 +337,11 @@ class MetabolicVNN(nn.Module):
     def __init__(
         self,
         graph: HypothesisGraph,
-        n_rates: int = 0,
         hidden: int = HIDDEN,
         steps: int = STEPS,
     ):
         super().__init__()
         self.steps = steps
-        self.n_rates = int(n_rates)
         self.register_buffer("mask_tg", (graph.A_tg > 0).to(torch.float32))
         self.register_buffer("A_ts", graph.A_ts.float())
         self.register_buffer("A_sy", graph.A_sy.float())
@@ -362,9 +363,6 @@ class MetabolicVNN(nn.Module):
         self.upd_y = nn.GRUCell(hidden, hidden)
         self.attn = nn.ModuleDict({lv: nn.Linear(hidden, 1) for lv in LEVELS})
         self.recon = nn.Linear(3 * hidden, self.n_g)
-        self.rate_head = (
-            nn.Linear(3 * hidden, self.n_rates) if self.n_rates > 0 else None
-        )
 
     def edge_weights_dense(self):
         w = F.softplus(self.tg_logit) * self.mask_tg
@@ -398,13 +396,10 @@ class MetabolicVNN(nn.Module):
 
     def forward(self, x_genes: torch.Tensor):
         pooled, _, _ = self.encode(x_genes)
-        recon = self.recon(pooled)
-        if self.rate_head is None:
-            return recon
-        return recon, self.rate_head(pooled)
+        return self.recon(pooled)
 
 
-def _recon_mse(model, Xt, idx, *, use_amp, Yr=None):
+def _recon_mse(model, Xt, idx, *, use_amp):
     model.eval()
     tot = 0.0
     n = 0
@@ -414,18 +409,7 @@ def _recon_mse(model, Xt, idx, *, use_amp, Yr=None):
             sel = idx[i : i + bs]
             xb = Xt.index_select(0, sel)
             with torch.amp.autocast("cuda", enabled=use_amp, dtype=torch.float16):
-                out = model(xb)
-            if isinstance(out, tuple):
-                y = out[0]
-                if Yr is not None and model.rate_head is not None:
-                    yb = Yr.index_select(0, sel)
-                    tot += (
-                        F.mse_loss(out[1].float(), yb.float(), reduction="sum").item()
-                        * RATE_LOSS_W
-                    )
-                    n += yb.numel()
-            else:
-                y = out
+                y = model(xb)
             tot += F.mse_loss(y.float(), xb.float(), reduction="sum").item()
             n += xb.numel()
     return tot / max(n, 1)
@@ -445,7 +429,7 @@ def _plot_loss(hist, stem):
     _out(f"{stem}_loss.csv", pd.DataFrame({"epoch": ep, "train": hist}))
 
 
-def _fit(model, Xt, device, *, stem, epochs: int = EPOCHS, Yr=None):
+def _fit(model, Xt, device, *, stem, epochs: int = EPOCHS):
     if device.type != "cuda":
         raise SystemExit(f"{stem}: VNN must train on CUDA, got {device}")
     kw = {"lr": 1e-3, "weight_decay": 1e-3}
@@ -466,36 +450,25 @@ def _fit(model, Xt, device, *, stem, epochs: int = EPOCHS, Yr=None):
             xb = Xt.index_select(0, sel)
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", dtype=torch.float16):
-                out = model(xb)
-                if isinstance(out, tuple):
-                    loss = F.mse_loss(out[0], xb)
-                    if Yr is not None:
-                        loss = loss + RATE_LOSS_W * F.mse_loss(
-                            out[1], Yr.index_select(0, sel)
-                        )
-                else:
-                    loss = F.mse_loss(out, xb)
+                loss = F.mse_loss(model(xb), xb)
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
-        hist.append(_recon_mse(model, Xt, idx, use_amp=True, Yr=Yr))
+        hist.append(_recon_mse(model, Xt, idx, use_amp=True))
     _plot_loss(hist, stem)
     print(f"{stem}: epoch {epochs} train loss {hist[-1]:.5g} on {device}", flush=True)
 
 
 def _encode_cells(model, Xt):
     model.eval()
-    hs, gs, rs = [], [], []
+    hs, gs = [], []
     bs = min(BATCH_SIZE, Xt.size(0))
     with torch.no_grad():
         for i in range(0, Xt.size(0), bs):
-            pooled, h_t, h_g = model.encode(Xt[i : i + bs])
+            _, h_t, h_g = model.encode(Xt[i : i + bs])
             hs.append(h_t.mean(-1))
             gs.append(h_g.mean(-1))
-            if model.rate_head is not None:
-                rs.append(model.rate_head(pooled))
-    rates = torch.cat(rs, dim=0) if rs else None
-    return torch.cat(hs, dim=0), torch.cat(gs, dim=0), rates
+    return torch.cat(hs, dim=0), torch.cat(gs, dim=0)
 
 
 def _mouse_means(X, obs: pd.DataFrame):
@@ -548,29 +521,19 @@ def _axis_tasks(db: Path):
 
 
 def _out(name, obj):
-    saved, err = False, None
-    for dest in (OUT, LOCAL_OUT):
-        try:
-            dest.mkdir(parents=True, exist_ok=True)
-            path = dest / name
-            if hasattr(obj, "savefig"):
-                obj.savefig(path, bbox_inches="tight", pad_inches=0.4, dpi=200)
-            else:
-                obj.to_csv(path, index=False)
-            saved = True
-        except OSError as e:
-            err = e
-    if not saved and err is not None:
-        raise err
+    OUT.mkdir(parents=True, exist_ok=True)
+    path = OUT / name
+    if hasattr(obj, "savefig"):
+        obj.savefig(path, bbox_inches="tight", pad_inches=0.4, dpi=200)
+    else:
+        obj.to_csv(path, index=False)
 
 
 def _read_table(name: str):
-    for dest in (LOCAL_OUT, OUT):
-        try:
-            return pd.read_csv(dest / name)
-        except FileNotFoundError:
-            continue
-    return None
+    path = OUT / name
+    if not path.exists():
+        return None
+    return pd.read_csv(path)
 
 
 def _gmm_fit(X, *, seed: int = 0):
@@ -628,18 +591,20 @@ def _arm_stats(y, genotype, treatment, genotypes, treatments, device):
         missing = [arms[i] for i, c in enumerate(counts.tolist()) if c < 1]
         raise ValueError(f"empty arm {missing}")
     means = scatter(y, arm, dim=0, dim_size=len(arms), reduce="mean")
-    # arms layout: (g0,t0), (g0,t1), (g1,t0), (g1,t1)
+    by = {a: means[i] for i, a in enumerate(arms)}
+    g0, g1 = genotypes
+    t0, t1 = treatments
     return {
-        "tet2": means[2] - means[0],
-        "il1": means[1] - means[0],
-        "interaction": (means[3] - means[1]) - (means[2] - means[0]),
+        "tet2": by[f"{g1}_{t0}"] - by[f"{g0}_{t0}"],
+        "il1": by[f"{g0}_{t1}"] - by[f"{g0}_{t0}"],
+        "interaction": (by[f"{g1}_{t1}"] - by[f"{g0}_{t1}"])
+        - (by[f"{g1}_{t0}"] - by[f"{g0}_{t0}"]),
         "means": means,
         "arms": arms,
     }
 
 
-def _task_title(name: str):
-    """Short task label for plots (drop long scCellFie prefixes)."""
+def _title(name):
     t = str(name)
     if " - " in t:
         t = t.split(" - ")[-1].strip()
@@ -873,9 +838,9 @@ def _plot_gene_cloud(tab, spec):
             ax.set_xticks([-1, 0, 1])
             ax.set_yticks([-1, 0, 1])
             p = float(sub["p_perm"].iloc[0]) if "p_perm" in sub.columns else np.nan
-            pred = _task_title(task) if np.isfinite(p) and p < P_SIG else None
+            pred = _title(task) if np.isfinite(p) and p < P_SIG else None
             ax.set_title(
-                _task_title(task),
+                _title(task),
                 fontweight="bold" if pred else "normal",
                 fontsize=11,
                 pad=12,
@@ -893,7 +858,7 @@ def _plot_gene_cloud(tab, spec):
         fig.text(
             0.5 * (pos0.x0 + pos1.x1),
             pos0.y1 + 0.028,
-            _subsystem_short(axis),
+            axis,
             ha="center",
             va="bottom",
             fontweight="bold",
@@ -956,13 +921,13 @@ def _plot_task_2x2(tab, spec):
                 vmin=-1.0,
                 vmax=1.0,
                 xlab=xlab,
-                ylab=_subsystem_short(axis) if j == 0 else None,
+                ylab=axis if j == 0 else None,
             )
             ax.set_xlabel(
                 xlab, fontsize=8, fontweight="bold" if pred else "normal", labelpad=10
             )
             ax.set_title(
-                _task_title(task),
+                _title(task),
                 fontweight="bold" if pred else "normal",
                 fontsize=12 if pred else 11,
                 pad=12,
@@ -983,23 +948,415 @@ def _plot_task_2x2(tab, spec):
     plt.close(fig)
 
 
-def _rate_matrix(adata: ad.AnnData, rate_sets: dict[str, tuple[str, ...]]):
-    """Z-scored mean expression of each rate gene set (targets for head R)."""
-    names = list(adata.var_names.astype(str))
-    idx = {g: i for i, g in enumerate(names)}
-    X = _to_dense(adata.layers.get("gene_scores", adata.X)).astype(np.float64)
+def _panel_rxns(db):
+    info = pd.read_csv(db / "Task-Info.csv")
+    tbr = pd.read_csv(db / "Task_by_Rxn.csv", index_col=0)
+    out = {}
+    for sub in SUBSYSTEMS:
+        tasks = info.loc[info["Subsystem"].astype(str).eq(sub), "Task"].astype(str)
+        for t in tasks:
+            if t not in tbr.index:
+                continue
+            row = tbr.loc[t]
+            for r in row.index[np.asarray(row) > 0]:
+                out.setdefault(str(r), set()).add(sub)
+    return {r: frozenset(s) for r, s in out.items()}
+
+
+def _rxn_proxy(adata, db):
+    if not hasattr(adata, "reactions"):
+        raise ValueError("adata.reactions required (run scCellFie first)")
+    panel = _panel_rxns(db)
+    R = _to_dense(adata.reactions.X).astype(np.float64)
+    r_idx = {str(r): i for i, r in enumerate(adata.reactions.var_names)}
     cols, labels = [], []
-    for name, genes in rate_sets.items():
-        ix = [idx[g] for g in genes if g in idx]
+    for sub in SUBSYSTEMS:
+        ix = [r_idx[r] for r, subs in panel.items() if sub in subs and r in r_idx]
         if not ix:
             continue
-        v = X[:, ix].mean(1)
+        v = R[:, ix].mean(1)
         v = (v - v.mean()) / (v.std() + 1e-6)
         cols.append(v.astype(np.float32))
-        labels.append(name)
+        labels.append(sub)
     if not cols:
-        raise ValueError("no rate-set genes present in AnnData")
+        raise ValueError("no subsystem reaction proxies")
     return np.column_stack(cols), labels
+
+
+BRANCHES = ("stem", "myeloid", "MegE", "lymphoid")
+BRANCH_COLORS = {
+    "stem": "#1f77b4",
+    "myeloid": "#2ca02c",
+    "MegE": "#d62728",
+    "lymphoid": "#9467bd",
+}
+CELLTYPIST_MODEL = "Immune_All_Low.pkl"
+
+
+def _ct_branch(label):
+    t = str(label).lower()
+    if any(
+        k in t
+        for k in (
+            "megakaryocyte",
+            "platelet",
+            "erythroid",
+            "erythrocyte",
+            "early mk",
+            "megakaryocyte-erythroid",
+            "memp",
+        )
+    ):
+        return "MegE"
+    if any(
+        k in t
+        for k in (
+            "b cell",
+            "t cell",
+            "t lymphoid",
+            "nk cell",
+            "ilc",
+            "plasma",
+            "lymphocyte",
+            "clp",
+            "elp",
+            "etp",
+            "thymocyte",
+            "mait",
+            "gamma-delta",
+            "cd8",
+            "cd4",
+            "early lymphoid",
+            "follicular",
+            "germinal",
+        )
+    ):
+        return "lymphoid"
+    if t == "nk":
+        return "lymphoid"
+    if any(
+        k in t
+        for k in (
+            "monocyte",
+            "macrophage",
+            "neutrophil",
+            "granulocyte",
+            "dendritic",
+            "dc1",
+            "dc2",
+            "dc3",
+            "pdc",
+            "gmp",
+            "cmp",
+            "mdp",
+            "mnp",
+            "myelocyte",
+            "promyelocyte",
+            "basophil",
+            "eosinophil",
+            "mast cell",
+            "mono-mac",
+            "neutrophil-myeloid",
+            "cycling dc",
+            "migratory dc",
+            "transitional dc",
+            "dc precursor",
+            " dc",
+        )
+    ):
+        return "myeloid"
+    if t == "dc" or t.startswith("dc"):
+        return "myeloid"
+    return "stem"
+
+
+def _load_hspc(spec):
+    raw = ad.read_h5ad(spec["qc"])
+    if spec["stem"] == "human":
+        key = "compartment" if "compartment" in raw.obs else "lineage"
+        adata = raw[raw.obs[key].astype(str).eq("HSPC")].copy()
+    else:
+        m = (
+            raw.obs["lineage"].astype(str).eq(LINEAGE)
+            & raw.obs["genotype"].isin(KEEP_GENOTYPE)
+            & raw.obs["treatment"].astype(str).isin(spec["keep_treatment"])
+        )
+        adata = raw[m].copy()
+    adata.obs["genotype"] = (
+        adata.obs["genotype"]
+        .astype(str)
+        .map({"WT": "WT", "Tet2_KO": "Tet2", "TET2_KO": "Tet2"})
+    )
+    adata.obs["treatment"] = adata.obs["treatment"].astype(str).map(spec["tmap"])
+    adata.obs["arm"] = (
+        adata.obs["genotype"].astype(str) + "_" + adata.obs["treatment"].astype(str)
+    )
+    adata = adata[adata.obs["arm"].isin(spec["arm_order"])].copy()
+    if "sample_name" not in adata.obs:
+        adata.obs["sample_name"] = adata.obs_names.astype(str)
+    return adata
+
+
+def _branch_occ(bdata, adata, spec):
+    import scanpy as sc
+    import celltypist
+    from celltypist import models
+    from sklearn.neighbors import NearestNeighbors
+
+    scor = adata.copy()
+    if "counts" in scor.layers:
+        scor.X = scor.layers["counts"].copy()
+        scor.uns.pop("log1p", None)
+        sc.pp.normalize_total(scor, target_sum=1e4)
+        sc.pp.log1p(scor)
+    elif "gene_scores" in scor.layers:
+        scor.X = scor.layers["gene_scores"].copy()
+    else:
+        xmax = float(np.max(_to_dense(scor.X)))
+        if xmax > 20:
+            scor.uns.pop("log1p", None)
+            sc.pp.normalize_total(scor, target_sum=1e4)
+            sc.pp.log1p(scor)
+    if spec["stem"] == "mice":
+        scor.var_names = pd.Index(scor.var_names.astype(str).str.upper())
+        scor = scor[:, ~scor.var_names.duplicated()].copy()
+
+    pred = celltypist.annotate(
+        scor,
+        model=models.Model.load(model=CELLTYPIST_MODEL),
+        majority_voting=False,
+    )
+    prob = pred.probability_matrix
+    occ = np.zeros((scor.n_obs, len(BRANCHES)), dtype=np.float64)
+    for j, col in enumerate(prob.columns.astype(str)):
+        occ[:, BRANCHES.index(_ct_branch(col))] += prob.iloc[:, j].to_numpy(dtype=float)
+    occ = occ / np.clip(occ.sum(axis=1, keepdims=True), 1e-12, None)
+
+    Z = bdata.obsm["X_vnn"]
+    k = min(30, max(5, bdata.n_obs // 50))
+    nn = NearestNeighbors(n_neighbors=k, metric="euclidean").fit(Z)
+    occ = occ[nn.kneighbors(Z, return_distance=False)].mean(axis=1)
+
+    hard = [BRANCHES[i] for i in occ.argmax(axis=1)]
+    br_order = [c for c in BRANCHES if c in set(hard)]
+    bdata.obs["branch_pred"] = pd.Categorical(hard, categories=br_order)
+    bdata.obs["celltypist"] = (
+        pred.predicted_labels["predicted_labels"].astype(str).to_numpy()
+    )
+    for j, lab in enumerate(BRANCHES):
+        bdata.obs[f"occupancy:{lab}"] = occ[:, j]
+    bdata.obsm["X_occupancy"] = occ.astype(np.float32)
+
+
+def _em(adata, cells, tab, spec):
+    import scanpy as sc
+    from pygam import LinearGAM, s
+    from sklearn.preprocessing import StandardScaler
+    from statsmodels.stats.multitest import multipletests
+
+    stem = spec["stem"]
+    if len(cells) != adata.n_obs:
+        raise ValueError(f"{stem}: cells n={len(cells)} adata n={adata.n_obs}")
+    meta = {"sample_name", "genotype", "treatment"}
+    task_cols = [c for c in cells.columns if c not in meta and c not in SUBSYSTEMS]
+    X_task = cells[task_cols].to_numpy(dtype=np.float64)
+    if hasattr(adata, "reactions"):
+        X_rate, rate_names = _rxn_proxy(adata, spec["db"])
+    else:
+        rate_names = [s for s in SUBSYSTEMS if s in cells.columns]
+        if not rate_names:
+            raise ValueError(
+                f"{stem}: need adata.reactions (scCellFie) or subsystem columns in cells"
+            )
+        X_rate = cells[rate_names].to_numpy(dtype=np.float64)
+    X = np.hstack([X_task, X_rate])
+    Z = StandardScaler().fit_transform(np.nan_to_num(X, nan=0.0)).astype(np.float32)
+    bdata = ad.AnnData(X=sparse.csr_matrix(Z))
+    for c in ("genotype", "treatment", "arm", "sample_name"):
+        if c in adata.obs:
+            bdata.obs[c] = adata.obs[c].astype(str).to_numpy()
+    if "arm" not in bdata.obs:
+        bdata.obs["arm"] = (
+            bdata.obs["genotype"].astype(str) + "_" + bdata.obs["treatment"].astype(str)
+        )
+    bdata.obsm["X_vnn"] = Z
+    for j, name in enumerate(task_cols):
+        bdata.obs[name] = X_task[:, j]
+    for j, name in enumerate(rate_names):
+        bdata.obs[name] = X_rate[:, j]
+
+    _branch_occ(bdata, adata, spec)
+    sc.pp.neighbors(bdata, use_rep="X_vnn", n_neighbors=15, metric="euclidean")
+    sc.tl.umap(bdata, min_dist=0.3)
+    sc.tl.diffmap(bdata, n_comps=15)
+    root_arm = spec["root_arm"]
+    mask = bdata.obs["arm"].astype(str).eq(root_arm).to_numpy()
+    if not mask.any():
+        raise ValueError(f"{stem}: no cells in root arm {root_arm}")
+    cent = Z[mask].mean(0)
+    root = int(np.argmin(((Z - cent) ** 2).sum(1)))
+    bdata.uns["iroot"] = root
+    sc.tl.dpt(bdata)
+    pt = bdata.obs["dpt_pseudotime"].to_numpy(dtype=float)
+    flip_key = (
+        "OXYDATIVE PHOSPHORYLATION"
+        if "OXYDATIVE PHOSPHORYLATION" in bdata.obs.columns
+        else rate_names[0]
+    )
+    flip = np.asarray(bdata.obs[flip_key], dtype=float)
+    if np.corrcoef(pt, flip)[0, 1] < 0:
+        pt = float(np.nanmax(pt)) - pt
+    bdata.obs["pseudotime_pred"] = pt
+    um = bdata.obsm["X_umap"]
+
+    fig, ax = plt.subplots(figsize=(5.5, 4.8))
+    sca = ax.scatter(
+        um[:, 0], um[:, 1], c=pt, s=5, cmap="gnuplot2", linewidths=0, rasterized=True
+    )
+    ax.scatter(um[root, 0], um[root, 1], c="cyan", s=40, linewidths=0.5, edgecolors="k")
+    ax.set_title(f"{stem} · metabolic pseudotime", fontweight="bold")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    fig.colorbar(sca, ax=ax, fraction=0.046, pad=0.02)
+    _out(f"{stem}_umap_lineage_pseudotime.png", fig)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(5.5, 4.8))
+    br = bdata.obs["branch_pred"].astype(str)
+    for cat in br.unique():
+        m = br.eq(cat).to_numpy()
+        ax.scatter(
+            um[m, 0],
+            um[m, 1],
+            c=BRANCH_COLORS.get(cat, "0.7"),
+            s=5,
+            linewidths=0,
+            label=cat,
+            rasterized=True,
+        )
+    ax.legend(frameon=False, fontsize=8, loc="best")
+    ax.set_title(f"{stem} · branch occupancy", fontweight="bold")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    _out(f"{stem}_umap_lineage_branch.png", fig)
+    plt.close(fig)
+
+    occ_tab = (
+        pd.crosstab(
+            bdata.obs["arm"].astype(str),
+            bdata.obs["branch_pred"].astype(str),
+            normalize="index",
+        )
+        .reindex(index=list(spec["arm_order"]))
+        .fillna(0.0)
+    )
+    _out(f"{stem}_lineage_occupancy.csv", occ_tab.reset_index())
+    fig, ax = plt.subplots(figsize=(7.0, 3.8))
+    bottom = np.zeros(len(occ_tab))
+    x = np.arange(len(occ_tab))
+    for col in [c for c in BRANCHES if c in occ_tab.columns]:
+        ax.bar(
+            x,
+            occ_tab[col].to_numpy(),
+            bottom=bottom,
+            color=BRANCH_COLORS[col],
+            width=0.7,
+            label=col,
+        )
+        bottom = bottom + occ_tab[col].to_numpy()
+    ax.set_xticks(x)
+    ax.set_xticklabels(list(spec["arm_labels"]))
+    ax.set_ylabel("Branch occupancy")
+    ax.set_ylim(0, 1)
+    ax.legend(frameon=False, fontsize=8, loc="center left", bbox_to_anchor=(1.02, 0.5))
+    ax.set_title(f"{stem} · arm × branch", fontweight="bold")
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    _out(f"{stem}_umap_lineage_occupancy.png", fig)
+    plt.close(fig)
+
+    gam_rows = []
+    for arm in spec["arm_order"]:
+        m = bdata.obs["arm"].astype(str).eq(arm).to_numpy()
+        if m.sum() < 30:
+            continue
+        t = pt[m]
+        for task in task_cols:
+            y = bdata.obs[task].to_numpy(dtype=float)[m]
+            gam = LinearGAM(s(0, n_splines=8)).fit(t.reshape(-1, 1), y)
+            pvals = gam.statistics_.get("p_values", [np.nan])
+            p = float(pvals[0]) if len(pvals) else np.nan
+            r2 = gam.statistics_.get("pseudo_r2", {})
+            expl = (
+                float(r2.get("explained_deviance", np.nan))
+                if isinstance(r2, dict)
+                else np.nan
+            )
+            gam_rows.append(
+                {
+                    "arm": arm,
+                    "task": task,
+                    "task_short": _title(task),
+                    "p_gam": p,
+                    "explained_deviance": expl,
+                    "n": int(m.sum()),
+                }
+            )
+    gam = pd.DataFrame(gam_rows)
+    if len(gam):
+        ok = np.isfinite(gam["p_gam"].to_numpy())
+        gam["q_gam"] = np.nan
+        if ok.any():
+            gam.loc[ok, "q_gam"] = multipletests(gam.loc[ok, "p_gam"], method="fdr_bh")[
+                1
+            ]
+        gam = gam.sort_values(
+            ["arm", "q_gam", "explained_deviance"], ascending=[True, True, False]
+        )
+    _out(f"{stem}_gam_tasks.csv", gam)
+
+    if len(gam):
+        top = (
+            gam.dropna(subset=["explained_deviance"])
+            .sort_values("explained_deviance", ascending=False)
+            .groupby("arm", sort=False)
+            .head(1)
+        )
+        tasks_plot = list(dict.fromkeys(top["task"].tolist()))[:4] or task_cols[:2]
+        fig, axs = plt.subplots(
+            1, len(tasks_plot), figsize=(3.4 * len(tasks_plot), 3.4), squeeze=False
+        )
+        for ax, task in zip(axs[0], tasks_plot):
+            for arm, lab in zip(spec["arm_order"], spec["arm_labels"]):
+                m = bdata.obs["arm"].astype(str).eq(arm).to_numpy()
+                if m.sum() < 20:
+                    continue
+                order = np.argsort(pt[m])
+                tt = pt[m][order]
+                yy = bdata.obs[task].to_numpy(dtype=float)[m][order]
+                bins = np.linspace(tt.min(), tt.max(), 12)
+                dig = np.digitize(tt, bins)
+                mu = [
+                    yy[dig == i].mean() if (dig == i).any() else np.nan
+                    for i in range(1, len(bins))
+                ]
+                xc = 0.5 * (bins[:-1] + bins[1:])
+                ax.plot(xc, mu, label=lab, lw=1.5)
+            ax.set_title(_title(task), fontsize=10, fontweight="bold")
+            ax.set_xlabel("pseudotime")
+            ax.set_ylabel("task score")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+        axs[0][-1].legend(frameon=False, fontsize=7, loc="best")
+        fig.suptitle(f"{stem} · GAM trends", fontweight="bold", y=1.02)
+        fig.tight_layout()
+        _out(f"{stem}_gam_trends.png", fig)
+        plt.close(fig)
+    print(f"{stem}: EM progression written", flush=True)
 
 
 def _arm_table(names, obs_stats, genotypes, treatments, pmap=None):
@@ -1020,251 +1377,172 @@ def _arm_table(names, obs_stats, genotypes, treatments, pmap=None):
     return pd.DataFrame(rows)
 
 
-def _chem_norm(s: str) -> str:
-    t = (
-        str(s)
-        .lower()
-        .replace("α", "alpha")
-        .replace("β", "beta")
-        .replace("µ", "u")
-        .replace("coenzyme a", "coa")
-        .replace("coenzyme-a", "coa")
+def _import_de():
+    try:
+        from sccellfie.stats.differential_analysis import scanpy_differential_analysis
+
+        return scanpy_differential_analysis
+    except ImportError:
+        return importlib.import_module(
+            "sccellfie.stats.differential_analysis"
+        ).scanpy_differential_analysis
+
+
+def _rxn_de(adata, spec, device):
+    if not hasattr(adata, "reactions"):
+        raise ValueError(f"{spec['stem']}: adata.reactions missing")
+    db = spec["db"]
+    rx = adata.reactions.copy()
+    for c in ("genotype", "treatment", "arm", "sample_name"):
+        if c in adata.obs.columns:
+            rx.obs[c] = adata.obs[c].astype(str).to_numpy()
+    rx.obs["lineage"] = "HSPC"
+    genotypes, treatments = GENOTYPES, spec["treatments"]
+    g0, g1 = genotypes
+    t0, t1 = treatments
+    pairs = [
+        (f"{g0}_{t0}", f"{g0}_{t1}"),
+        (f"{g1}_{t0}", f"{g1}_{t1}"),
+        (f"{g0}_{t0}", f"{g1}_{t0}"),
+        (f"{g0}_{t1}", f"{g1}_{t1}"),
+        (f"{g0}_{t0}", f"{g1}_{t1}"),
+    ]
+    de = _import_de()(
+        rx,
+        cell_type="HSPC",
+        cell_type_key="lineage",
+        condition_key="arm",
+        condition_pairs=pairs,
+        min_cells=20,
     )
-    t = re.sub(r"\b(d|l|dl)-", " ", t)
-    t = re.sub(r"[^a-z0-9+]+", " ", t)
-    t = t.replace("nadp+", "nadp").replace("nad+", "nad")
-    return " ".join(t.split())
+    X = _to_dense(rx.X).astype(np.float64)
+    Y_m, g_m, t_m, _ = _mouse_means(X, rx.obs)
+    y = torch.tensor(Y_m, device=device, dtype=torch.float32)
+    obs = _arm_stats(y, g_m, t_m, genotypes, treatments, device)
+    names = list(map(str, rx.var_names))
+    tab = _arm_table(names, obs, genotypes, treatments)
+    tab = tab.rename(columns={"task": "reaction"})
+    panel = _panel_rxns(db)
+    tab["subsystem"] = [
+        "; ".join(s for s in SUBSYSTEMS if s in panel.get(r, ()))
+        for r in tab["reaction"].astype(str)
+    ]
+    tab["in_panel"] = tab["subsystem"].astype(str).ne("")
 
-
-def _compound_queries(compound: str) -> list[str]:
-    """Normalized string forms of an RT compound for Task-name matching."""
-    n = _chem_norm(compound)
-    out = []
-    for q in (n, n.replace(" ", "-"), n.replace(" ", ""), n.replace("+", "")):
-        if q and q not in out:
-            out.append(q)
-    # multi-token: also try without trailing charge words
-    toks = [t for t in n.split() if t not in {"ion", "acid"}]
-    if toks:
-        joined = " ".join(toks)
-        if joined not in out:
-            out.append(joined)
-    return out
-
-
-def _tasks_for_compound(compound: str, tasks: list[str]) -> list[str]:
-    """Match RT compound to scCellFie Task strings (substring / token overlap)."""
-    queries = _compound_queries(compound)
-    if not queries:
-        return []
-    # prefer longer queries first to avoid tiny false hits
-    queries = sorted(queries, key=len, reverse=True)
-    hit = []
-    for task in tasks:
-        tl = _chem_norm(task)
-        ts = _chem_norm(_task_title(task))
-        blob = f"{tl} {ts}"
-        ok = False
-        for q in queries:
-            if len(q) < 4:
-                continue
-            if q in blob:
-                ok = True
-                break
-            # token coverage for multiword compounds (e.g. erythrose 4 phosphate)
-            qt = [t for t in q.replace("-", " ").split() if len(t) >= 4]
-            if len(qt) >= 2 and all(t in blob for t in qt):
-                ok = True
-                break
-        if ok:
-            hit.append(task)
-    return hit
-
-
-def _rank_ions(task_tab: pd.DataFrame, path: Path = RT_XLSX, db: Path | None = None):
-    """Score Polar RT compounds by |interaction| of matched scCellFie Task names."""
-    if not path.exists():
-        raise FileNotFoundError(path)
-    rt = pd.read_excel(path)
-    compounds = rt["compound"].astype(str).tolist()
-    rts = (
-        rt["rt"].to_numpy(dtype=float)
-        if "rt" in rt.columns
-        else np.nan * np.ones(len(compounds))
-    )
-    formulas = (
-        rt["formula"].astype(str).tolist()
-        if "formula" in rt.columns
-        else [""] * len(compounds)
-    )
-    # Prefer full Task-Info names in kept subsystems; fall back to table tasks.
-    task_names = task_tab["task"].astype(str).tolist()
-    if db is not None and (db / "Task-Info.csv").exists():
-        info = pd.read_csv(db / "Task-Info.csv")
-        kept = set(KEEP_SUBSYSTEMS)
-        pool = (
-            info.loc[info["Subsystem"].astype(str).isin(kept), "Task"]
-            .astype(str)
-            .tolist()
+    def _pair(g1, g2):
+        return de.loc[de["group1"].eq(g1) & de["group2"].eq(g2)].drop_duplicates(
+            "feature"
         )
-        # only score tasks present in this run's table
-        tab_set = set(task_names)
-        task_names = [t for t in pool if t in tab_set] or task_names
-    inter = {
-        t: float(a)
-        for t, a in zip(
-            task_tab["task"].astype(str),
-            task_tab["interaction"].to_numpy(dtype=float),
-        )
-    }
-    pmap = {
-        t: float(p)
-        for t, p in zip(
-            task_tab["task"].astype(str),
-            task_tab["p_perm"].to_numpy(dtype=float),
-        )
-    }
 
-    rows = []
-    for compound, formula, rt_min in zip(compounds, formulas, rts):
-        matched = _tasks_for_compound(compound, task_names)
-        score = 0.0
-        for task in matched:
-            w = 1.0 if pmap.get(task, 1.0) < P_SIG else 0.5
-            score += abs(inter.get(task, 0.0)) * w
-        panel = "matched" if matched else "unlinked"
-        rows.append(
-            {
-                "compound": compound,
-                "formula": formula,
-                "rt": rt_min,
-                "score": score,
-                "panel": panel,
-                "n_tasks": len(matched),
-                "tasks": "; ".join(matched),
-                "task_short": "; ".join(_task_title(t) for t in matched),
+    if de is not None and not de.empty:
+        inter_p = _pair(f"{g0}_{t0}", f"{g1}_{t1}")[
+            ["feature", "adj_p_value", "cohens_d", "log2FC"]
+        ].rename(
+            columns={
+                "feature": "reaction",
+                "adj_p_value": "p_arm",
+                "cohens_d": "d_arm",
+                "log2FC": "log2FC_arm",
             }
         )
-    out = pd.DataFrame(rows)
-    out["_pr"] = out["panel"].map({"matched": 0, "unlinked": 1}).fillna(9)
-    out = out.sort_values(
-        ["_pr", "score"], ascending=[True, False], kind="mergesort"
-    ).drop(columns=["_pr"])
-    out["rank"] = np.arange(1, len(out) + 1)
-    return out
+        tab = tab.merge(inter_p, on="reaction", how="left")
+        treat_wt = _pair(f"{g0}_{t0}", f"{g0}_{t1}")
+        treat_ko = _pair(f"{g1}_{t0}", f"{g1}_{t1}")
+        geno_t0 = _pair(f"{g0}_{t0}", f"{g1}_{t0}")
+        geno_t1 = _pair(f"{g0}_{t1}", f"{g1}_{t1}")
+        if not treat_wt.empty:
+            tab["d_treat_wt"] = tab["reaction"].map(
+                treat_wt.set_index("feature")["cohens_d"]
+            )
+            tab["p_treat_wt"] = tab["reaction"].map(
+                treat_wt.set_index("feature")["adj_p_value"]
+            )
+        if not treat_ko.empty:
+            tab["d_treat_ko"] = tab["reaction"].map(
+                treat_ko.set_index("feature")["cohens_d"]
+            )
+            tab["p_treat_ko"] = tab["reaction"].map(
+                treat_ko.set_index("feature")["adj_p_value"]
+            )
+        if "d_treat_wt" in tab.columns and "d_treat_ko" in tab.columns:
+            tab["d_interaction"] = tab["d_treat_ko"] - tab["d_treat_wt"]
+        if not geno_t0.empty:
+            tab["d_geno_t0"] = tab["reaction"].map(
+                geno_t0.set_index("feature")["cohens_d"]
+            )
+        if not geno_t1.empty:
+            tab["d_geno_t1"] = tab["reaction"].map(
+                geno_t1.set_index("feature")["cohens_d"]
+            )
+        de = de.copy()
+        de["subsystem"] = [
+            "; ".join(s for s in SUBSYSTEMS if s in panel.get(str(r), ()))
+            for r in de["feature"].astype(str)
+        ]
+    _out(f"{spec['stem']}_rxn_de.csv", de)
+    return tab
 
 
-def _plot_ions_bar(ions: pd.DataFrame, spec):
-    """Ranked bar of matched RT compounds (nomination scores)."""
-    sub = ions.loc[ions["panel"].eq("matched")].head(25)
+def _rxn_bar(rxn_tab, spec):
+    if rxn_tab is None or not len(rxn_tab):
+        return
+    score = "d_interaction" if "d_interaction" in rxn_tab.columns else "interaction"
+    sub = rxn_tab.copy()
+    if "in_panel" in sub.columns:
+        sub = sub.loc[sub["in_panel"].astype(bool)]
+    sub = sub.loc[np.isfinite(sub[score].to_numpy(dtype=float))].copy()
     if sub.empty:
-        sub = ions.head(15)
+        return
+    sub["_abs"] = sub[score].abs()
+    sub = sub.sort_values("_abs", ascending=False).head(25)
     fig, ax = plt.subplots(figsize=(7.5, max(3.5, 0.28 * len(sub) + 1.2)))
     y = np.arange(len(sub))[::-1]
-    colors = ["#2ca02c" if p == "matched" else "0.7" for p in sub["panel"].astype(str)]
-    ax.barh(y, sub["score"].to_numpy(dtype=float), color=colors, height=0.7)
+    vals = sub[score].to_numpy(dtype=float)
+    colors = ["#C44E52" if v >= 0 else "#4C72B0" for v in vals]
+    ax.barh(y, vals, color=colors, height=0.7)
+    labels = []
+    for r, ss in zip(
+        sub["reaction"].astype(str),
+        sub.get("subsystem", pd.Series([""] * len(sub))).astype(str),
+    ):
+        lab = r if not ss else f"{r} · {ss.split(';')[0]}"
+        labels.append(lab[:48])
     ax.set_yticks(y)
-    ax.set_yticklabels(sub["compound"].astype(str).tolist(), fontsize=8)
-    ax.set_xlabel("Nomination score (|task interaction|)")
+    ax.set_yticklabels(labels, fontsize=7)
+    ax.axvline(0, color="0.5", lw=0.8)
+    ax.set_xlabel("Cohen's d interaction (KO treat − WT treat)")
     ax.set_title(
         ("Mice" if spec["stem"] == "mice" else "Human")
-        + " · RT ions ↔ scCellFie tasks",
+        + " · reaction differential activity",
         fontweight="bold",
     )
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    _out(f"{spec['stem']}_ions.png", fig)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    _out(f"{spec['stem']}_rxn_de.png", fig)
     plt.close(fig)
 
 
-def _plot_dual_interaction(metab: pd.DataFrame, rates: pd.DataFrame, spec):
-    """One figure: metabolic task 2×2 row(s) + rate-proxy 2×2 row."""
-    mgroups = _task_groups(metab["task"], spec["db"])
-    rate_names = rates["task"].astype(str).tolist()
-    if not mgroups and not rate_names:
+def _escher_export(rxn_tab, spec):
+    if rxn_tab is None or not len(rxn_tab):
         return
-    # flatten metabolic tasks in axis order
-    mtasks = [t for _, ts in mgroups for t in ts]
-    blocks = [("metabolic tasks", mtasks), ("EM rate proxies", rate_names)]
-    blocks = [(title, names) for title, names in blocks if names]
-    nrows = len(blocks)
-    ncols = max(len(names) for _, names in blocks)
-    fig, axs = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(3.2 * ncols, 3.4 * nrows),
-        squeeze=False,
+    score = "d_interaction" if "d_interaction" in rxn_tab.columns else "interaction"
+    sub = rxn_tab
+    if "in_panel" in sub.columns:
+        sub = sub.loc[sub["in_panel"].astype(bool)]
+    data = {
+        str(r): float(v)
+        for r, v in zip(sub["reaction"].astype(str), sub[score].to_numpy(dtype=float))
+        if np.isfinite(v)
+    }
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / f"{spec['stem']}_escher_d_interaction.json").write_text(
+        json.dumps(data, indent=2, sort_keys=True)
     )
-    fig.subplots_adjust(
-        left=0.10, right=0.90, top=0.88, bottom=0.12, wspace=0.45, hspace=0.55
-    )
-    im, used = None, []
-    for i, (title, names) in enumerate(blocks):
-        tab = metab if title.startswith("metabolic") else rates
-        pmap = tab.set_index("task")["p_perm"]
-        slot = dict(zip(_row_cols(len(names), ncols), names))
-        for j in range(ncols):
-            ax = axs[i][j]
-            if j not in slot:
-                ax.axis("off")
-                continue
-            name = slot[j]
-            row = tab.loc[tab["task"] == name].iloc[0]
-            p = float(pmap[name]) if name in pmap.index else np.nan
-            pred = np.isfinite(p) and p < P_SIG
-            xlab = _p_label(p, bold=pred)
-            im = _paint_2x2(
-                ax,
-                _arm_grid(row, spec),
-                spec,
-                cmap=plt.cm.RdBu_r,
-                vmin=-1.0,
-                vmax=1.0,
-                xlab=xlab,
-                ylab=title if j == 0 else None,
-            )
-            ax.set_xlabel(
-                xlab, fontsize=8, fontweight="bold" if pred else "normal", labelpad=8
-            )
-            ax.set_title(
-                _task_title(name) if title.startswith("metabolic") else name,
-                fontweight="bold" if pred else "normal",
-                fontsize=11,
-                pad=10,
-            )
-            used.append(ax)
-        pos0 = axs[i][_row_cols(len(names), ncols)[0]].get_position()
-        pos1 = axs[i][_row_cols(len(names), ncols)[-1]].get_position()
-        fig.text(
-            0.5 * (pos0.x0 + pos1.x1),
-            pos0.y1 + 0.02,
-            title,
-            ha="center",
-            va="bottom",
-            fontweight="bold",
-            fontsize=12,
-        )
-    if im is not None and used:
-        cbar = fig.colorbar(im, ax=used, fraction=0.025, pad=0.04)
-        cbar.set_ticks([-1.0, 1.0])
-        cbar.set_ticklabels(["−1", "1"])
-        cbar.set_label("Relative mean")
-    fig.suptitle(
-        ("Human" if spec["stem"] == "human" else "Mice") + " · multi-head VNN",
-        fontweight="bold",
-        fontsize=14,
-        y=0.98,
-    )
-    _out(f"{spec['stem']}_dual.png", fig)
-    plt.close(fig)
 
 
 def _set_mean_perm(
     M, genotype, treatment, genotypes, treatments, gene_sets, genes, device
 ):
-    # Competitive mean: |task-set mean − universe mean| on the frozen
-    # gene-embedding interaction, then N_PERM gene shuffles. Smallest p is
-    # 1/(N_PERM+1).
     inter = (
         _arm_stats(M, genotype, treatment, genotypes, treatments, device)["interaction"]
         .detach()
@@ -1334,14 +1612,14 @@ def train_vnn(adata, tbg, spec, device):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     Xt = torch.from_numpy(np.ascontiguousarray(X)).to(device)
-    model = MetabolicVNN(graph, n_rates=0).to(device)
+    model = MetabolicVNN(graph).to(device)
     print(
         f"{stem}: VNN on {device}, n={Xt.size(0)} genes={Xt.size(1)} "
         f"tasks={len(graph.tasks)}",
         flush=True,
     )
-    _fit(model, Xt, device, stem=stem, Yr=None)
-    states, gene_h, rates = _encode_cells(model, Xt)
+    _fit(model, Xt, device, stem=stem)
+    states, gene_h = _encode_cells(model, Xt)
     cells = pd.DataFrame(
         {
             "sample_name": adata.obs["sample_name"].astype(str).to_numpy(),
@@ -1352,6 +1630,9 @@ def train_vnn(adata, tbg, spec, device):
     st = states.detach().cpu().numpy()
     for j, name in enumerate(graph.tasks):
         cells[name] = st[:, j]
+    X_rate, rate_names = _rxn_proxy(adata, db)
+    for j, name in enumerate(rate_names):
+        cells[name] = X_rate[:, j]
     _out(f"{stem}_cells.csv", cells)
 
     Y_m, g_m, t_m, _mice = _mouse_means(st, adata.obs)
@@ -1377,22 +1658,17 @@ def train_vnn(adata, tbg, spec, device):
     )
     tab["n_perm"] = N_PERM
     tab["epochs"] = EPOCHS
-    # short labels for tables/plots
-    tab["task_short"] = [_task_title(t) for t in tab["task"]]
+    tab["task_short"] = [_title(t) for t in tab["task"]]
     tab["subsystem"] = [
-        _subsystem_short(
-            next(
-                (ax for ax, ts in _axis_tasks(db).items() if t in ts),
-                "",
-            )
-        )
+        next((ax for ax, ts in _axis_tasks(db).items() if t in ts), "")
         for t in tab["task"]
     ]
     _out(f"{stem}.csv", tab)
 
-    ions = _rank_ions(tab, db=spec["db"])
-    _out(f"{stem}_ions.csv", ions)
-    _plot_ions_bar(ions, spec)
+    rxn_tab = _rxn_de(adata, spec, device)
+    _out(f"{stem}_ions.csv", rxn_tab)
+    _rxn_bar(rxn_tab, spec)
+    _escher_export(rxn_tab, spec)
 
     arm = {
         f"{gi}_{ti}": M[(g_raw == gi) & (t_raw == ti)].mean(0)
@@ -1423,22 +1699,11 @@ def train_vnn(adata, tbg, spec, device):
         raise ValueError(f"{stem}: no task gene edges for gene cloud")
     genes = pd.concat(rows, ignore_index=True)
     genes["p_perm"] = genes["task"].map(tab.set_index("task")["p_perm"])
-    genes["task_short"] = [_task_title(t) for t in genes["task"]]
+    genes["task_short"] = [_title(t) for t in genes["task"]]
     _out(f"{stem}_genes.csv", genes)
     _plot_gene_cloud(genes, spec)
     _plot_task_2x2(tab, spec)
-    _downstream_em_progression(adata, cells, tab, spec)
-
-
-def _downstream_em_progression(adata, cells, tab, spec):
-    """Metabolic EM progression on frozen X_vnn (DPT + branch + GAM).
-
-    Implemented in follow-up; placeholder keeps train_vnn callable.
-    """
-    print(
-        f"{spec['stem']}: skipping EM progression plots (wire X_vnn DPT/GAM next)",
-        flush=True,
-    )
+    _em(adata, cells, tab, spec)
 
 
 def _run_species(spec, gpu):
@@ -1464,17 +1729,13 @@ def replot_saved():
             genes["p_perm"] = genes["task"].map(tab.set_index("task")["p_perm"])
         _plot_gene_cloud(genes, spec)
         _plot_task_2x2(tab, spec)
-        if RT_XLSX.exists():
-            ions = _rank_ions(tab, db=spec["db"])
-            _out(f"{stem}_ions.csv", ions)
-            _plot_ions_bar(ions, spec)
+        rxn = _read_table(f"{stem}_ions.csv")
+        if rxn is not None and "reaction" in rxn.columns:
+            _rxn_bar(rxn, spec)
+            _escher_export(rxn, spec)
         cells = _read_table(f"{stem}_cells.csv")
         if cells is not None:
-            try:
-                adata = _sccellfie(spec)
-                _downstream_em_progression(adata, cells, tab, spec)
-            except Exception as e:
-                print(f"{stem}: downstream skip ({e})", flush=True)
+            _em(_load_hspc(spec), cells, tab, spec)
 
 
 def _gpu_free_mib():
@@ -1485,56 +1746,49 @@ def _gpu_free_mib():
     return [int(x.strip()) for x in out.splitlines() if x.strip()]
 
 
+def _ready():
+    for s in SPECIES:
+        stem = s["stem"]
+        t = _read_table(f"{stem}.csv")
+        g = _read_table(f"{stem}_genes.csv")
+        c = _read_table(f"{stem}_cells.csv")
+        ions = _read_table(f"{stem}_ions.csv")
+        if t is None or g is None or c is None:
+            return False
+        if "p_perm" not in t or "n_perm" not in t or "epochs" not in t:
+            return False
+        if int(t["n_perm"].iloc[0]) != N_PERM or int(t["epochs"].iloc[0]) != EPOCHS:
+            return False
+        if ions is None or "reaction" not in ions.columns:
+            return False
+        if "d_interaction" not in ions.columns and "interaction" not in ions.columns:
+            return False
+        if not any(sub in c.columns for sub in SUBSYSTEMS):
+            return False
+    return True
+
+
 def main():
-    print("factor.py: GPU VNN + ions (scCellFie Task-name match)", flush=True)
-    if torch.cuda.is_available():
-        print(
-            f"cuda devices={torch.cuda.device_count()} "
-            f"current={torch.cuda.get_device_name(0)}",
-            flush=True,
-        )
-    tabs = [_read_table(f"{s['stem']}.csv") for s in SPECIES]
-    genes = [_read_table(f"{s['stem']}_genes.csv") for s in SPECIES]
-    cells = [_read_table(f"{s['stem']}_cells.csv") for s in SPECIES]
-    ready = all(
-        t is not None
-        and g is not None
-        and c is not None
-        and "p_perm" in t.columns
-        and "n_perm" in t.columns
-        and int(t["n_perm"].iloc[0]) == N_PERM
-        and "epochs" in t.columns
-        and int(t["epochs"].iloc[0]) == EPOCHS
-        for t, g, c in zip(tabs, genes, cells)
-    )
-    if ready:
+    if _ready():
         replot_saved()
         return
-    if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
-        raise SystemExit(
-            "CUDA required for VNN training. Run in a host shell:\n"
-            "  source .venv/bin/activate && nvidia-smi && python factor.py"
-        )
-    free = _gpu_free_mib()
-    gpus = [i for i, mib in enumerate(free) if mib >= 4000]
+    gpus = [i for i, m in enumerate(_gpu_free_mib()) if m >= 4000]
     if not gpus:
-        raise SystemExit(f"no GPU with 4 GiB free (free MiB={free})")
+        raise SystemExit("need a CUDA GPU with ≥4 GiB free")
     if len(gpus) >= 2:
-        jobs = ((SPECIES[0], gpus[0]), (SPECIES[1], gpus[1]))
         ctx = mp.get_context("spawn")
-        procs = [ctx.Process(target=_run_species, args=job) for job in jobs]
-        for p in procs:
+        ps = [
+            ctx.Process(target=_run_species, args=(s, g)) for s, g in zip(SPECIES, gpus)
+        ]
+        for p in ps:
             p.start()
-        bad = []
-        for p, (spec, gpu) in zip(procs, jobs):
+        for p in ps:
             p.join()
             if p.exitcode:
-                bad.append((spec["stem"], gpu, p.exitcode))
-        if bad:
-            raise SystemExit(f"species worker failed: {bad}")
+                raise SystemExit(f"worker failed: {p.exitcode}")
         return
-    for spec in SPECIES:
-        _run_species(spec, gpus[0])
+    for s in SPECIES:
+        _run_species(s, gpus[0])
 
 
 if __name__ == "__main__":
