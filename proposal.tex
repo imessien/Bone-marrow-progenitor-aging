@@ -10,7 +10,7 @@
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[hidelinks]{hyperref}
 
-\graphicspath{{results/chip_metabolic_graph/}}
+\graphicspath{{results/chip_metabolic_graph/}{results_local/chip_metabolic_graph/}}
 \setcounter{topnumber}{4}
 \setcounter{bottomnumber}{4}
 \setcounter{totalnumber}{4}
@@ -37,15 +37,16 @@
     recombinant IL-1$\beta$ interaction on flux (ECAR, OCR, or $^{13}$C fate). McClatchy
     is haematopoietic stem and progenitor cell (HSPC) RNA; Kim is zymosan myeloid lipid;
     Ni{\~n}o is an HSPC metabolome without IL-1; Flores-Gomez is IL-1$\beta$ training of
-    human CD34$^{+}$ cells without TET2 mutants. A visible neural network (VNN) on
-    McClatchy's Tet2 $\times$ IL-1 HSPC gene scores meets $p=0.0001$ for HMP shunt in
-    mouse, matching Kim's tracing. Human TET2 $\times$ LPS encodings meet glycolysis,
-    Complex~I, Complex~II, and HMP shunt. We hypothesize that TET2 loss changes how
-    IL-1R allocates glucose carbon and redox (PPP / UDP-GlcNAc / OGT). Polar LC-MS of
-    cells and medium on the same four arms, a clone knockout plus IL-1 added, tests that
-    allocation. Glycolysis and OXPHOS are human-LPS and Ni{\~n}o main effects. Lactate,
-    succinate, itaconate, and $\alpha$-KG are secondary or negative reads on the mouse
-    IL-1 2$\times$2.
+    human CD34$^{+}$ cells without TET2 mutants. A multi-head visible neural network (VNN)
+    on McClatchy's Tet2 $\times$ IL-1 HSPC gene scores meets $p=0.0001$ for HMP shunt in
+    mouse (head~M) and jointly predicts emergency-myelopoiesis rate proxies (head~R);
+    an RNA$\to$metabolite prior ranks polar RT-list ions for the LC-MS panel. Human TET2
+    $\times$ LPS encodings meet glycolysis, Complex~I, Complex~II, and HMP shunt. We
+    hypothesize that TET2 loss changes how IL-1R allocates glucose carbon and redox
+    (PPP / UDP-GlcNAc / OGT). Polar LC-MS of cells and medium on the same four arms, a
+    clone knockout plus IL-1 added, tests that allocation. Glycolysis and OXPHOS are
+    human-LPS and Ni{\~n}o main effects. Lactate, succinate, itaconate, and $\alpha$-KG
+    are secondary or negative reads on the mouse IL-1 2$\times$2.
 \end{abstract}
 
 \section*{Introduction}
@@ -186,6 +187,19 @@ genotype. Relative mean can look strong when the encodings are small. Glycolysis
 the most positive Tet2/IL-1 cell in that scaled map. Complex~I has the most negative.
 Scaled colour is not the test. The mouse test that survives Bonferroni is HMP shunt.
 
+The multi-head extension keeps that metabolic encoder (head~M) and adds head~R: a
+linear map from the same pooled VNN state to fixed emergency-myelopoiesis rate proxies
+(cell-cycle, Myc, OXPHOS, and glutamine gene-set scores). Training stays
+self-supervised: gene reconstruction plus rate-score regression. Genotype and IL-1 never
+enter the loss. After freeze, the same head~M task encodings and head~R rate proxies are
+overlaid on a transcriptomic UMAP of the HSPC query (Fig.~\ref{fig:mice-umap}), in the
+spirit of HemaScribe/HemaScape feature maps rather than a second 2$\times$2 heatmap for
+rates. Arm colouring shows genotype$\times$challenge composition; continuous panels show
+HMP shunt, glycolysis, and EM rate proxies (Myc, OXPHOS) cell by cell. An
+RNA$\to$metabolite prior then ranks ions on the collaborator polar RT list by weighting
+each compound with the absolute interaction of matched VNN tasks (primary panel first;
+Fig.~\ref{fig:mice} encodings; Table~\ref{tab:ions}).
+
 The $p$ value under each panel is $(1+k)/10000$ from 9{,}999 gene shuffles, where $k$ is how many times the interaction was more extreme than random gene sets of the same size.
 shuffles were at least as extreme. Bonferroni over seven mouse tasks or eight human
 tasks is about $0.006$ to $0.007$; 9{,}999 shuffles put the floor at $0.0001$, below
@@ -202,6 +216,11 @@ The other six mouse tasks do not, including glycolysis ($p=0.48$) and Complex~I
 with the human LPS map and with Ni{\~n}o's HSPC metabolome, which had no
 IL-1~\cite{Nino2026TETmetabolism}. Ni{\~n}o's G6PD/PPP fitness map is why HMP shunt is
 worth a cheap G6PD assay. The permutation did not test G6PD activity.
+
+From the mouse encodings, the RT-list prior ranks 6-phosphogluconate, NADPH, erythrose-4-phosphate,
+and NADP$^{+}$ as the top primary ions (matched to HMP/ribose tasks), with succinate,
+$\alpha$-KG, and lactate as secondary reads (Table~\ref{tab:ions}). That ranking feeds
+the cheap-assay$\to$LC-MS panel below; it is not flux.
 
 Gene embedding clouds are the interpretability for that map (Fig.~\ref{fig:mice-genes},
 Fig.~\ref{fig:human-genes}). Each point is one task gene. $x$ is the challenge main on
@@ -261,6 +280,46 @@ HSPCs so the LC-MS matches the VNN.
         an interaction.}
     \label{fig:human-genes}
 \end{figure}
+
+\begin{table}[t]
+    \centering
+    \caption{\textbf{Mouse RNA$\to$metabolite ion ranking} on the polar RT list, scored from
+        absolute VNN task interactions (HMP-weighted). Primary ions feed the LC-MS panel;
+        secondary stay as negative/secondary reads. Score is nomination, not measured flux.}
+    \label{tab:ions}
+    \begin{tabular}{rlrrr}
+        \hline
+        Rank & Compound & RT (min) & Score & Panel \\
+        \hline
+        1 & 6-phosphogluconate & 10.77 & 0.012 & primary \\
+        2 & NADPH & 11.08 & 0.012 & primary \\
+        3 & D-Erythrose 4-phosphate & 8.55 & 0.011 & primary \\
+        4 & NADP$^{+}$ & 11.06 & 0.011 & primary \\
+        5 & Succinate & 9.81 & 0.009 & secondary \\
+        6 & $\alpha$-ketoglutarate & 10.07 & 0.007 & secondary \\
+        7 & Lactate & 5.58 & 0.002 & secondary \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\begin{figure}[p]
+    \centering
+    \IfFileExists{results_local/chip_metabolic_graph/mice_umap_landscape.png}{%
+        \includegraphics[width=\textwidth,height=0.82\textheight,keepaspectratio]{mice_umap_landscape.png}%
+    }{%
+        \fbox{\parbox{0.9\textwidth}{\centering\vspace{2cm}
+        UMAP landscape (arm + HMP/glycolysis + EM rate proxies)\\
+        generated by \texttt{python plot\_proxy\_umap.py}.
+        \vspace{2cm}}}%
+    }
+    \caption{\textbf{Mice, UMAP of metabolic tasks and EM rate proxies.} Left: McClatchy
+        HSPC UMAP coloured by genotype$\times$IL-1 arm. Right: the same embedding coloured
+        by frozen head~M task encodings (HMP shunt, glycolysis) and head~R EM rate proxies
+        (Myc, OXPHOS). Layout follows HemaScribe-style feature maps; scores are nominations
+        on RNA, not measured flux. Human GSE285379 counterpart:
+        \texttt{human\_umap\_landscape.png}.}
+    \label{fig:mice-umap}
+\end{figure}
 \FloatBarrier
 
 \section*{Proposed experiment}
@@ -271,9 +330,10 @@ is added. Polar LC-MS of cells and medium is the readout. The genotype $\times$ 
 term on flux is what would refute or support the allocation hypothesis. Age-associated
 myelopoiesis is why that loop exists in people. It is not what the four arms measure.
 Cheap CFU, 5hmC, and G6PD or Seahorse assays on those cultures come first, to de-risk the
-spend.
+spend---and to test whether head~R rate proxies move before LC-MS.
 
-The primary polar panel follows the mouse HMP-shunt encoding and Kim's tracing:
+The primary polar panel follows the mouse HMP-shunt encoding, Kim's tracing, and the
+RT-list ranking (Table~\ref{tab:ions}):
 6-phosphogluconate, NADPH/NADP$^{+}$, erythrose-4-phosphate, sedoheptulose-7-phosphate,
 fructose-6-phosphate, and UDP-GlcNAc. Lactate, succinate, itaconate, and $\alpha$-KG are
 pre-specified secondary or negative reads on this IL-1 2$\times$2. They remain in the
